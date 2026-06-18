@@ -12,7 +12,6 @@ import { readFileSync } from "node:fs";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createClient } from "@supabase/supabase-js";
-import nodemailer from "nodemailer";
 import { extractDeal } from "./extract.mjs";
 
 // ── tiny .env loader (no dependency) ─────────────────────────────────────────
@@ -29,24 +28,29 @@ const DRY_RUN = !!process.env.DRY_RUN;
 const LOOKBACK_DAYS = Number(process.env.LOOKBACK_DAYS || 30);
 const CONFIDENCE_FLOOR = 0.45; // below this we still insert, but flag for review
 
-// Text alerts: send a text when a new deal lands, via the carrier email-to-SMS
-// gateway (e.g. 3053191776@txt.att.net) using the same Gmail account over SMTP.
+// Text alerts via Twilio when a new deal lands. Needs TWILIO_ACCOUNT_SID,
+// TWILIO_AUTH_TOKEN, TWILIO_FROM (your Twilio number, E.164) and SMS_TO (your
+// phone, E.164 e.g. +13053191776). Silently no-ops if any are unset.
 const SMS_TO = process.env.SMS_TO || "";
-let _mailer;
+const TWILIO_SID = process.env.TWILIO_ACCOUNT_SID || "";
+const TWILIO_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
+const TWILIO_FROM = process.env.TWILIO_FROM || "";
 async function textNewDeal(label, address, price) {
-  if (!SMS_TO || DRY_RUN) return;
+  if (DRY_RUN || !SMS_TO || !TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM) return;
+  const body =
+    `New deal: ${label}` +
+    (address ? ` — ${address}` : "") +
+    (price ? ` — $${Number(price).toLocaleString()}` : "");
   try {
-    _mailer ??= nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
+      method: "POST",
+      headers: {
+        Authorization: "Basic " + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString("base64"),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ To: SMS_TO, From: TWILIO_FROM, Body: body }),
     });
-    const body =
-      `New deal: ${label}` +
-      (address ? ` — ${address}` : "") +
-      (price ? ` — $${Number(price).toLocaleString()}` : "");
-    await _mailer.sendMail({ from: process.env.GMAIL_USER, to: SMS_TO, subject: "DealFlow", text: body });
+    if (!res.ok) { console.error(`  text alert failed: ${res.status} ${(await res.text()).slice(0, 200)}`); return; }
     console.log("  texted alert: " + body);
   } catch (e) {
     console.error("  text alert failed: " + e.message);
