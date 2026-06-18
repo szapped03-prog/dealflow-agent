@@ -153,6 +153,33 @@ async function uploadAttachments(email) {
   return docs;
 }
 
+// Pull a Google Street View photo of the building from its address and store it
+// as a property photo. Metadata check first (free) so we don't save a blank
+// "no imagery" image or pay for one. Returns a photo record or null.
+const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_KEY || "";
+async function fetchBuildingPhoto(address, folderKey) {
+  if (!GOOGLE_MAPS_KEY || !address) return null;
+  try {
+    const meta = await fetch(
+      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${encodeURIComponent(address)}&key=${GOOGLE_MAPS_KEY}`
+    ).then((r) => r.json());
+    if (meta.status !== "OK") return null; // no street imagery for this address
+    const img = await fetch(
+      `https://maps.googleapis.com/maps/api/streetview?size=640x640&location=${encodeURIComponent(address)}&fov=80&key=${GOOGLE_MAPS_KEY}`
+    );
+    if (!img.ok) return null;
+    const buf = Buffer.from(await img.arrayBuffer());
+    const path = `${safePath(folderKey)}/streetview.jpg`;
+    const { error } = await supabase.storage.from(BUCKET).upload(path, buf, { contentType: "image/jpeg", upsert: true });
+    if (error) { console.error(`  street view upload failed: ${error.message}`); return null; }
+    console.log("  📷 added Street View photo");
+    return { path, name: "Street View" };
+  } catch (e) {
+    console.error(`  street view failed: ${e.message}`);
+    return null;
+  }
+}
+
 // ── write paths ───────────────────────────────────────────────────────────────
 const isImage = (d) => (d?.type || "").startsWith("image/"); // route image attachments to photos
 
@@ -173,6 +200,10 @@ async function applyInsert(email, extracted, flag) {
     noteParts.push(`[LOW CONFIDENCE ${extracted.confidence.toFixed(2)}]`);
   noteParts.push(noteLine(email, extracted));
 
+  const emailPhotos = (email.uploadedDocs || []).filter(isImage).map((d) => ({ path: d.path, name: d.name }));
+  const streetPhoto = await fetchBuildingPhoto(extracted.address, email.messageId);
+  const photos = [...emailPhotos, ...(streetPhoto ? [streetPhoto] : [])];
+
   const row = {
     status: "pipeline",
     nickname: extracted.nickname || email.subject?.slice(0, 60) || "Untitled deal",
@@ -189,7 +220,7 @@ async function applyInsert(email, extracted, flag) {
     contacts: extracted.contacts || [],
     key_dates: extracted.key_dates || [],
     documents: mergeDocs(extracted.documents, (email.uploadedDocs || []).filter((d) => !isImage(d))),
-    photos: (email.uploadedDocs || []).filter(isImage).map((d) => ({ path: d.path, name: d.name })),
+    photos,
     source_email_id: email.messageId,
     source_from: email.from,
     needs_review: flagged,
@@ -231,7 +262,12 @@ async function applyUpdate(email, extracted, target) {
   patch.contacts = mergeArrays(target.contacts, extracted.contacts);
   patch.key_dates = mergeArrays(target.key_dates, extracted.key_dates);
   patch.documents = mergeArrays(target.documents, mergeDocs(extracted.documents, (email.uploadedDocs || []).filter((d) => !isImage(d))));
-  patch.photos = mergeArrays(target.photos, (email.uploadedDocs || []).filter(isImage).map((d) => ({ path: d.path, name: d.name })));
+  const newPhotos = (email.uploadedDocs || []).filter(isImage).map((d) => ({ path: d.path, name: d.name }));
+  if (!(target.photos || []).length) {
+    const sp = await fetchBuildingPhoto(extracted.address, email.messageId);
+    if (sp) newPhotos.push(sp);
+  }
+  patch.photos = mergeArrays(target.photos, newPhotos);
   // Always refresh the "latest email" summary shown live on the deal.
   patch.last_email_summary = extracted.summary;
   patch.last_email_at = email.date;
