@@ -183,6 +183,22 @@ async function fetchBuildingPhoto(address, folderKey) {
 // ── write paths ───────────────────────────────────────────────────────────────
 const isImage = (d) => (d?.type || "").startsWith("image/"); // route image attachments to photos
 
+// Build a project-status timeline entry from the email, or null if it reports no
+// real progress (a plain new-deal intro shouldn't clutter the status log).
+function buildUpdate(email, extracted) {
+  const su = extracted.status_update;
+  if (!su) return null;
+  if (!su.has_update && !su.progress && !su.delays && !su.tenants) return null;
+  return {
+    date: email.date,
+    from: email.from,
+    headline: su.headline || extracted.summary || null,
+    progress: su.progress || null,
+    delays: su.delays || null,
+    tenants: su.tenants || null,
+  };
+}
+
 // Combine the model's mentioned documents with the actually-uploaded files,
 // dropping a mentioned doc when an uploaded file has the same name (the uploaded
 // one wins — it carries the openable storage path). Avoids double-listing.
@@ -203,6 +219,7 @@ async function applyInsert(email, extracted, flag) {
   const emailPhotos = (email.uploadedDocs || []).filter(isImage).map((d) => ({ path: d.path, name: d.name }));
   const streetPhoto = await fetchBuildingPhoto(extracted.address, email.messageId);
   const photos = [...emailPhotos, ...(streetPhoto ? [streetPhoto] : [])];
+  const update = buildUpdate(email, extracted);
 
   const row = {
     status: "pipeline",
@@ -221,6 +238,7 @@ async function applyInsert(email, extracted, flag) {
     key_dates: extracted.key_dates || [],
     documents: mergeDocs(extracted.documents, (email.uploadedDocs || []).filter((d) => !isImage(d))),
     photos,
+    updates: update ? [update] : [],
     source_email_id: email.messageId,
     source_from: email.from,
     needs_review: flagged,
@@ -268,6 +286,8 @@ async function applyUpdate(email, extracted, target) {
     if (sp) newPhotos.push(sp);
   }
   patch.photos = mergeArrays(target.photos, newPhotos);
+  const update = buildUpdate(email, extracted);
+  if (update) patch.updates = mergeArrays(target.updates, [update]);
   // Always refresh the "latest email" summary shown live on the deal.
   patch.last_email_summary = extracted.summary;
   patch.last_email_at = email.date;
@@ -312,7 +332,7 @@ async function main() {
   // Pull the current pipeline + the set of already-ingested Message-IDs.
   const { data: deals, error: readErr } = await supabase
     .from("deals")
-    .select("id, nickname, address, stage, notes, contacts, key_dates, documents, photos, source_email_id");
+    .select("id, nickname, address, stage, notes, contacts, key_dates, documents, photos, updates, source_email_id");
   if (readErr) {
     console.error("Could not read deals from Supabase:", readErr.message);
     process.exit(1);

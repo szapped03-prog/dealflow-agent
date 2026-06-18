@@ -110,6 +110,19 @@ const DEAL_SCHEMA = {
       type: "string",
       description: "One or two sentence plain-English summary of the opportunity, for the deal's notes.",
     },
+    status_update: {
+      type: "object",
+      additionalProperties: false,
+      description: "Project/operational status the email reports about an ongoing building (construction, leasing, tenants). Only for progress updates — NOT for a brand-new opportunity with no operational news.",
+      properties: {
+        has_update: { type: "boolean", description: "true only if this email reports real progress/news on the building's status (construction, leasing, tenants, financing, delays). false for a plain new-deal intro." },
+        headline: { type: ["string", "null"], description: "One-line summary of what's new in this email." },
+        progress: { type: ["string", "null"], description: "Progress made: construction milestones, deal/financing steps, leasing momentum." },
+        delays: { type: ["string", "null"], description: "Any delays, blockers, issues, or risks raised." },
+        tenants: { type: ["string", "null"], description: "Tenant/occupancy/leasing news: new leases, move-outs, occupancy %, rent collection, tenant issues." },
+      },
+      required: ["has_update", "headline", "progress", "delays", "tenants"],
+    },
   },
   required: [
     "is_real_estate_deal",
@@ -128,6 +141,7 @@ const DEAL_SCHEMA = {
     "key_dates",
     "documents",
     "summary",
+    "status_update",
   ],
 };
 
@@ -138,7 +152,8 @@ Rules:
 - Never invent facts. If a field isn't supported by the email, use null (or [] for lists).
 - Derive a sensible nickname even when not stated (address + asset type).
 - Today's date is provided; resolve relative dates ("next Friday") to ISO where you can, else leave note text.
-- PDF attachments (offering memos, financing memos, rent rolls, flyers) are included when present — READ them and use them as the PRIMARY source for price, units, asset type, address, submarket, broker, and financials. The email body is often just a short cover note.`;
+- PDF attachments (offering memos, financing memos, rent rolls, flyers) are included when present — READ them and use them as the PRIMARY source for price, units, asset type, address, submarket, broker, and financials. The email body is often just a short cover note.
+- status_update: set has_update=true only when the email reports ACTUAL progress on a building you'd track over time — construction milestones, financing/closing steps, leasing/occupancy changes, tenant issues, or delays. Capture progress / delays / tenants separately. For a first-time opportunity intro with no operational news, set has_update=false and leave the sub-fields null.`;
 
 /**
  * @param {{subject:string, from:string, date:string, text:string, attachments:string[]}} email
