@@ -3,7 +3,7 @@ name: DealFlow email ingest
 # Runs the agent in the cloud on a schedule (no local machine needed).
 on:
   schedule:
-    - cron: '0 * * * *' # hourly, on the hour (UTC)
+    - cron: '*/10 * * * *' # every 10 minutes
   workflow_dispatch: {} # lets us trigger a run by hand from the Actions tab
 
 # If a run is still going when the next fires, don't pile up.
