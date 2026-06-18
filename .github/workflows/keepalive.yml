@@ -1,0 +1,23 @@
+name: keepalive
+
+# GitHub auto-disables scheduled workflows after 60 days of repo inactivity.
+# This makes a tiny empty commit weekly so the schedule never pauses — keeping
+# the email agent always-on with no manual intervention.
+on:
+  schedule:
+    - cron: '23 9 * * 1' # weekly, Monday 09:23 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          git config user.name "dealflow-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "keepalive: keep scheduled workflows active"
+          git push
