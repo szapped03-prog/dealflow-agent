@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createClient } from "@supabase/supabase-js";
+import nodemailer from "nodemailer";
 import { extractDeal } from "./extract.mjs";
 
 // ── tiny .env loader (no dependency) ─────────────────────────────────────────
@@ -68,6 +69,48 @@ for (const k of required) {
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
+
+// Reply to the person who forwarded the email, confirming the deal was logged.
+// Threaded (In-Reply-To) so it lands in the same conversation. No-op on dry runs
+// or when there's no sender address.
+let _mailer;
+async function sendReply(email, info) {
+  if (DRY_RUN || !email.fromAddress) return;
+  try {
+    _mailer ??= nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+    });
+    const subject = /^re:/i.test(email.subject || "") ? email.subject : `Re: ${email.subject || "Deal"}`;
+    const price = info.asking_price ? ` — $${Number(info.asking_price).toLocaleString()}` : "";
+    const body = [
+      `✅ ${info.action} to DealFlow: ${info.nickname}`,
+      info.address || null,
+      price ? `Asking${price}` : null,
+      "",
+      info.summary || "",
+      "",
+      "View pipeline → https://dealflow-self-eight.vercel.app/pipeline",
+      "",
+      "— DealFlow",
+    ]
+      .filter((l) => l !== null)
+      .join("\n");
+    await _mailer.sendMail({
+      from: process.env.GMAIL_USER,
+      to: email.fromAddress,
+      subject,
+      inReplyTo: email.messageId,
+      references: email.messageId,
+      text: body,
+    });
+    console.log("  ↩ replied to " + email.fromAddress);
+  } catch (e) {
+    console.error("  reply failed: " + e.message);
+  }
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const norm = (s) =>
@@ -256,6 +299,7 @@ async function applyInsert(email, extracted, flag) {
   if (error) throw error;
   console.log(`  INSERT "${row.nickname}"${flagged ? " (flagged for review)" : ""}`);
   await textNewDeal(row.nickname, row.address, row.asking_price);
+  await sendReply(email, { action: "Added", nickname: row.nickname, address: row.address, asking_price: row.asking_price, summary: extracted.summary });
 }
 
 async function applyUpdate(email, extracted, target) {
@@ -300,6 +344,7 @@ async function applyUpdate(email, extracted, target) {
   const { error } = await supabase.from("deals").update(patch).eq("id", target.id);
   if (error) throw error;
   console.log(`  UPDATE "${target.nickname}" (${target.id.slice(0, 8)})`);
+  await sendReply(email, { action: "Updated", nickname: target.nickname, address: patch.address ?? target.address, asking_price: patch.asking_price, summary: extracted.summary });
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
