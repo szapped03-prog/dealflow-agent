@@ -150,6 +150,8 @@ async function uploadAttachments(email) {
 }
 
 // ── write paths ───────────────────────────────────────────────────────────────
+const isImage = (d) => (d?.type || "").startsWith("image/"); // route image attachments to photos
+
 async function applyInsert(email, extracted, flag) {
   const flagged = !!flag || extracted.confidence < CONFIDENCE_FLOOR;
   const noteParts = [];
@@ -173,7 +175,8 @@ async function applyInsert(email, extracted, flag) {
     notes: noteParts.join("\n"),
     contacts: extracted.contacts || [],
     key_dates: extracted.key_dates || [],
-    documents: mergeArrays(extracted.documents, email.uploadedDocs || []),
+    documents: mergeArrays(extracted.documents, (email.uploadedDocs || []).filter((d) => !isImage(d))),
+    photos: (email.uploadedDocs || []).filter(isImage).map((d) => ({ path: d.path, name: d.name })),
     source_email_id: email.messageId,
     source_from: email.from,
     needs_review: flagged,
@@ -214,7 +217,8 @@ async function applyUpdate(email, extracted, target) {
   patch.notes = [target.notes, noteLine(email, extracted)].filter(Boolean).join("\n");
   patch.contacts = mergeArrays(target.contacts, extracted.contacts);
   patch.key_dates = mergeArrays(target.key_dates, extracted.key_dates);
-  patch.documents = mergeArrays(target.documents, mergeArrays(extracted.documents, email.uploadedDocs || []));
+  patch.documents = mergeArrays(target.documents, mergeArrays(extracted.documents, (email.uploadedDocs || []).filter((d) => !isImage(d))));
+  patch.photos = mergeArrays(target.photos, (email.uploadedDocs || []).filter(isImage).map((d) => ({ path: d.path, name: d.name })));
   // Always refresh the "latest email" summary shown live on the deal.
   patch.last_email_summary = extracted.summary;
   patch.last_email_at = email.date;
@@ -259,7 +263,7 @@ async function main() {
   // Pull the current pipeline + the set of already-ingested Message-IDs.
   const { data: deals, error: readErr } = await supabase
     .from("deals")
-    .select("id, nickname, address, stage, notes, contacts, key_dates, documents, source_email_id");
+    .select("id, nickname, address, stage, notes, contacts, key_dates, documents, photos, source_email_id");
   if (readErr) {
     console.error("Could not read deals from Supabase:", readErr.message);
     process.exit(1);
