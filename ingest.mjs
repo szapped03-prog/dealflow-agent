@@ -156,6 +156,15 @@ async function uploadAttachments(email) {
 // ── write paths ───────────────────────────────────────────────────────────────
 const isImage = (d) => (d?.type || "").startsWith("image/"); // route image attachments to photos
 
+// Combine the model's mentioned documents with the actually-uploaded files,
+// dropping a mentioned doc when an uploaded file has the same name (the uploaded
+// one wins — it carries the openable storage path). Avoids double-listing.
+function mergeDocs(extractedDocs, uploaded) {
+  const names = new Set(uploaded.map((d) => (d.name || "").toLowerCase()));
+  const mentioned = (extractedDocs || []).filter((d) => !names.has((d.name || "").toLowerCase()));
+  return mergeArrays(mentioned, uploaded);
+}
+
 async function applyInsert(email, extracted, flag) {
   const flagged = !!flag || extracted.confidence < CONFIDENCE_FLOOR;
   const noteParts = [];
@@ -179,7 +188,7 @@ async function applyInsert(email, extracted, flag) {
     notes: noteParts.join("\n"),
     contacts: extracted.contacts || [],
     key_dates: extracted.key_dates || [],
-    documents: mergeArrays(extracted.documents, (email.uploadedDocs || []).filter((d) => !isImage(d))),
+    documents: mergeDocs(extracted.documents, (email.uploadedDocs || []).filter((d) => !isImage(d))),
     photos: (email.uploadedDocs || []).filter(isImage).map((d) => ({ path: d.path, name: d.name })),
     source_email_id: email.messageId,
     source_from: email.from,
@@ -221,7 +230,7 @@ async function applyUpdate(email, extracted, target) {
   patch.notes = [target.notes, noteLine(email, extracted)].filter(Boolean).join("\n");
   patch.contacts = mergeArrays(target.contacts, extracted.contacts);
   patch.key_dates = mergeArrays(target.key_dates, extracted.key_dates);
-  patch.documents = mergeArrays(target.documents, mergeArrays(extracted.documents, (email.uploadedDocs || []).filter((d) => !isImage(d))));
+  patch.documents = mergeArrays(target.documents, mergeDocs(extracted.documents, (email.uploadedDocs || []).filter((d) => !isImage(d))));
   patch.photos = mergeArrays(target.photos, (email.uploadedDocs || []).filter(isImage).map((d) => ({ path: d.path, name: d.name })));
   // Always refresh the "latest email" summary shown live on the deal.
   patch.last_email_summary = extracted.summary;
