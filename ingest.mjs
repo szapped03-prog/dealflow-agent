@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createClient } from "@supabase/supabase-js";
+import nodemailer from "nodemailer";
 import { extractDeal } from "./extract.mjs";
 
 // ── tiny .env loader (no dependency) ─────────────────────────────────────────
@@ -27,6 +28,30 @@ try {
 const DRY_RUN = !!process.env.DRY_RUN;
 const LOOKBACK_DAYS = Number(process.env.LOOKBACK_DAYS || 30);
 const CONFIDENCE_FLOOR = 0.45; // below this we still insert, but flag for review
+
+// Text alerts: send a text when a new deal lands, via the carrier email-to-SMS
+// gateway (e.g. 3053191776@txt.att.net) using the same Gmail account over SMTP.
+const SMS_TO = process.env.SMS_TO || "";
+let _mailer;
+async function textNewDeal(label, address, price) {
+  if (!SMS_TO || DRY_RUN) return;
+  try {
+    _mailer ??= nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+    });
+    const body =
+      `New deal: ${label}` +
+      (address ? ` — ${address}` : "") +
+      (price ? ` — $${Number(price).toLocaleString()}` : "");
+    await _mailer.sendMail({ from: process.env.GMAIL_USER, to: SMS_TO, subject: "DealFlow", text: body });
+    console.log("  texted alert: " + body);
+  } catch (e) {
+    console.error("  text alert failed: " + e.message);
+  }
+}
 
 const required = ["ANTHROPIC_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "GMAIL_USER", "GMAIL_APP_PASSWORD"];
 for (const k of required) {
@@ -162,6 +187,7 @@ async function applyInsert(email, extracted, flag) {
   const { error } = await supabase.from("deals").insert(row);
   if (error) throw error;
   console.log(`  INSERT "${row.nickname}"${flagged ? " (flagged for review)" : ""}`);
+  await textNewDeal(row.nickname, row.address, row.asking_price);
 }
 
 async function applyUpdate(email, extracted, target) {
