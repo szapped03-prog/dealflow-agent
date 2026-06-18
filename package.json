@@ -1,0 +1,17 @@
+{
+  "name": "dealflow-email-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reads forwarded deal emails from a shared inbox and populates the DealFlow Supabase pipeline.",
+  "scripts": {
+    "ingest": "node ingest.mjs",
+    "ingest:dry": "DRY_RUN=1 node ingest.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.69.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "imapflow": "^1.0.171",
+    "mailparser": "^3.7.1"
+  }
+}
