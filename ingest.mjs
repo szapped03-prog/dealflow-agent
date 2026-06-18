@@ -178,6 +178,9 @@ async function applyInsert(email, extracted, flag) {
     source_from: email.from,
     needs_review: flagged,
     owner_email: email.fromAddress || email.from,
+    last_email_summary: extracted.summary,
+    last_email_at: email.date,
+    last_email_from: email.from,
   };
 
   if (DRY_RUN) {
@@ -212,6 +215,10 @@ async function applyUpdate(email, extracted, target) {
   patch.contacts = mergeArrays(target.contacts, extracted.contacts);
   patch.key_dates = mergeArrays(target.key_dates, extracted.key_dates);
   patch.documents = mergeArrays(target.documents, mergeArrays(extracted.documents, email.uploadedDocs || []));
+  // Always refresh the "latest email" summary shown live on the deal.
+  patch.last_email_summary = extracted.summary;
+  patch.last_email_at = email.date;
+  patch.last_email_from = email.from;
 
   if (DRY_RUN) {
     console.log(`  DRY: would UPDATE "${target.nickname}" (${target.id.slice(0, 8)})`);
