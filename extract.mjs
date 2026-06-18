@@ -4,12 +4,28 @@
 // every Anthropic SDK version, unlike the newer output_config structured outputs.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { PDFDocument } from "pdf-lib";
 
 // Lazy singleton — constructed on first use, AFTER ingest.mjs has loaded .env.
 // (ES module imports run before the importer's body, so constructing at import
 // time would miss env vars the caller sets at startup.)
 let _client;
 const getClient = () => (_client ??= new Anthropic());
+
+// Trim a PDF to its first N pages to keep token cost low. Returns the original
+// bytes if anything goes wrong (size cap downstream still guards).
+async function firstPages(buf, n) {
+  try {
+    const src = await PDFDocument.load(buf, { ignoreEncryption: true });
+    if (src.getPageCount() <= n) return buf;
+    const out = await PDFDocument.create();
+    const pages = await out.copyPages(src, Array.from({ length: n }, (_, i) => i));
+    pages.forEach((p) => out.addPage(p));
+    return Buffer.from(await out.save());
+  } catch {
+    return buf;
+  }
+}
 
 // Mirrors the columns in schema.sql + schema_email_agent.sql.
 const DEAL_SCHEMA = {
@@ -121,7 +137,8 @@ Rules:
 - Prices are whole dollars: "$18.5M" -> 18500000, "$6.2 million" -> 6200000.
 - Never invent facts. If a field isn't supported by the email, use null (or [] for lists).
 - Derive a sensible nickname even when not stated (address + asset type).
-- Today's date is provided; resolve relative dates ("next Friday") to ISO where you can, else leave note text.`;
+- Today's date is provided; resolve relative dates ("next Friday") to ISO where you can, else leave note text.
+- PDF attachments (offering memos, financing memos, rent rolls, flyers) are included when present — READ them and use them as the PRIMARY source for price, units, asset type, address, submarket, broker, and financials. The email body is often just a short cover note.`;
 
 /**
  * @param {{subject:string, from:string, date:string, text:string, attachments:string[]}} email
@@ -140,20 +157,50 @@ export async function extractDeal(email) {
     (email.text || "").slice(0, 24000),
   ].join("\n");
 
-  const resp = await getClient().messages.create({
-    model: "claude-opus-4-8",
-    max_tokens: 4000,
-    system: SYSTEM,
-    tools: [
-      {
-        name: "record_deal",
-        description: "Record the extracted real-estate deal from the email.",
-        input_schema: DEAL_SCHEMA,
-      },
-    ],
-    tool_choice: { type: "tool", name: "record_deal" },
-    messages: [{ role: "user", content: body }],
-  });
+  // Attach PDFs (first 15 pages each) so the model reads the OM/memo. Trimmed to
+  // keep cost low; total inline size capped as a backstop.
+  const MAX_PAGES = 15;
+  const MAX_PDF_BYTES = 18 * 1024 * 1024;
+  let used = 0;
+  const docBlocks = [];
+  for (const a of email.attachmentFiles || []) {
+    const isPdf = /application\/pdf/i.test(a.contentType || "") || /\.pdf$/i.test(a.filename || "");
+    if (!isPdf || !a.content) continue;
+    const trimmed = await firstPages(a.content, MAX_PAGES);
+    if (used + trimmed.length > MAX_PDF_BYTES) continue;
+    used += trimmed.length;
+    docBlocks.push({
+      type: "document",
+      source: { type: "base64", media_type: "application/pdf", data: trimmed.toString("base64") },
+      title: a.filename,
+    });
+  }
+
+  // Use the cheaper Haiku model when reading PDFs (token-heavy); Opus for text-only.
+  const call = (withDocs) =>
+    getClient().messages.create({
+      model: withDocs && docBlocks.length ? "claude-haiku-4-5" : "claude-opus-4-8",
+      max_tokens: 4000,
+      system: SYSTEM,
+      tools: [
+        {
+          name: "record_deal",
+          description: "Record the extracted real-estate deal from the email and any attached documents.",
+          input_schema: DEAL_SCHEMA,
+        },
+      ],
+      tool_choice: { type: "tool", name: "record_deal" },
+      messages: [{ role: "user", content: withDocs && docBlocks.length ? [...docBlocks, { type: "text", text: body }] : body }],
+    });
+
+  let resp;
+  try {
+    resp = await call(docBlocks.length > 0);
+  } catch (e) {
+    if (!docBlocks.length) throw e;
+    console.error(`  PDF read failed (${e.message}); retrying text-only`);
+    resp = await call(false);
+  }
 
   if (resp.stop_reason === "refusal") {
     throw new Error("Model refused to process this email.");
