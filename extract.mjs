@@ -123,6 +123,23 @@ const DEAL_SCHEMA = {
       },
       required: ["has_update", "headline", "progress", "delays", "tenants"],
     },
+    comps: {
+      type: "array",
+      description: "Comparable sales or rentals found in the email body or attached documents (OMs and broker emails often include a sales-comps or rent-comps section). Pull each comp listed. Empty array if none are provided.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          address: { type: ["string", "null"], description: "Address or name of the comparable property." },
+          price: { type: ["number", "null"], description: "Sale price or monthly rent in whole dollars." },
+          metric: { type: ["string", "null"], description: "Key per-unit metric if given, e.g. '$425/SF', '$310K/unit', '4.6% cap'." },
+          date: { type: ["string", "null"], description: "Sale/lease date if given (ISO where possible)." },
+          kind: { type: ["string", "null"], enum: ["sale", "rent", null], description: "sale comp or rent comp." },
+          note: { type: ["string", "null"], description: "Any other detail: units, SF, beds, distance, notes." },
+        },
+        required: ["address", "price", "metric", "date", "kind", "note"],
+      },
+    },
   },
   required: [
     "is_real_estate_deal",
@@ -142,6 +159,7 @@ const DEAL_SCHEMA = {
     "documents",
     "summary",
     "status_update",
+    "comps",
   ],
 };
 
@@ -153,7 +171,8 @@ Rules:
 - Derive a sensible nickname even when not stated (address + asset type).
 - Today's date is provided; resolve relative dates ("next Friday") to ISO where you can, else leave note text.
 - PDF attachments (offering memos, financing memos, rent rolls, flyers) are included when present — READ them and use them as the PRIMARY source for price, units, asset type, address, submarket, broker, and financials. The email body is often just a short cover note.
-- status_update: set has_update=true only when the email reports ACTUAL progress on a building you'd track over time — construction milestones, financing/closing steps, leasing/occupancy changes, tenant issues, or delays. Capture progress / delays / tenants separately. For a first-time opportunity intro with no operational news, set has_update=false and leave the sub-fields null.`;
+- status_update: set has_update=true only when the email reports ACTUAL progress on a building you'd track over time — construction milestones, financing/closing steps, leasing/occupancy changes, tenant issues, or delays. Capture progress / delays / tenants separately. For a first-time opportunity intro with no operational news, set has_update=false and leave the sub-fields null.
+- comps: if the email or any attached document includes comparable sales or rentals (a "comps", "comparables", or "rent comps" section is common in OMs), extract each one into the comps array. Do not invent comps — only include comps actually present in the materials.`;
 
 /**
  * @param {{subject:string, from:string, date:string, text:string, attachments:string[]}} email
