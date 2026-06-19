@@ -210,10 +210,11 @@ export async function extractDeal(email) {
     });
   }
 
-  // Use the cheaper Haiku model when reading PDFs (token-heavy); Opus for text-only.
+  // Use Sonnet when reading PDFs (cheaper than Opus on token-heavy docs, sharper
+  // than Haiku); Opus for text-only.
   const call = (withDocs) =>
     getClient().messages.create({
-      model: withDocs && docBlocks.length ? "claude-haiku-4-5" : "claude-opus-4-8",
+      model: withDocs && docBlocks.length ? "claude-sonnet-4-6" : "claude-opus-4-8",
       max_tokens: 4000,
       system: SYSTEM,
       tools: [
@@ -242,4 +243,58 @@ export async function extractDeal(email) {
   const toolUse = resp.content.find((b) => b.type === "tool_use" && b.name === "record_deal");
   if (!toolUse) throw new Error("Model did not return the record_deal tool call.");
   return toolUse.input; // already a parsed object matching DEAL_SCHEMA
+}
+
+const COMP_ITEM = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    address: { type: ["string", "null"] },
+    price: { type: ["number", "null"], description: "Sale price (or rent), whole dollars." },
+    metric: { type: ["string", "null"], description: "$/unit, $/SF, or cap rate if available." },
+    date: { type: ["string", "null"], description: "Sale/lease date." },
+    kind: { type: ["string", "null"], enum: ["sale", "rent", null] },
+    note: { type: ["string", "null"], description: "Source/citation + any detail (units, SF)." },
+  },
+  required: ["address", "price", "metric", "date", "kind", "note"],
+};
+
+// Actively SEARCH THE WEB for recent comparable sales near a property and return
+// them structured. Two steps: research with the web_search tool, then structure.
+export async function findComps(deal) {
+  if (!deal.address && !deal.submarket) return [];
+  const client = getClient();
+  const target = [deal.nickname, deal.address, deal.submarket, deal.asset_type,
+    deal.units ? `${deal.units} units` : null,
+    deal.asking_price ? `asking $${Number(deal.asking_price).toLocaleString()}` : null]
+    .filter(Boolean).join(" · ");
+
+  const tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }];
+  const messages = [{
+    role: "user",
+    content:
+      `Find 4-6 RECENT (ideally last ~24 months) comparable SALES for the property below. ` +
+      `Search the web — brokerage sites, The Real Deal, PincusCo, Crexi, CoStar news, public records. ` +
+      `For each comp give: address, sale price, $/unit or $/SF if available, sale date, and a one-line source. ` +
+      `Only real, sourced transactions near this property and similar in type/size. If you can't find solid comps, say so.\n\nProperty: ${target}`,
+  }];
+
+  let resp = await client.messages.create({ model: "claude-opus-4-8", max_tokens: 4000, tools, messages });
+  let guard = 0;
+  while (resp.stop_reason === "pause_turn" && guard++ < 6) {
+    messages.push({ role: "assistant", content: resp.content });
+    resp = await client.messages.create({ model: "claude-opus-4-8", max_tokens: 4000, tools, messages });
+  }
+  const findings = resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+  if (!findings) return [];
+
+  const s = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 2000,
+    tools: [{ name: "record_comps", description: "Record the comparable sales found.", input_schema: { type: "object", additionalProperties: false, properties: { comps: { type: "array", items: COMP_ITEM } }, required: ["comps"] } }],
+    tool_choice: { type: "tool", name: "record_comps" },
+    messages: [{ role: "user", content: `Extract the comparable sales below into structured data; put the source (e.g. "The Real Deal, Mar 2025") in note. Omit anything that isn't a real sourced comp.\n\n${findings}` }],
+  });
+  const tu = s.content.find((b) => b.type === "tool_use" && b.name === "record_comps");
+  return tu ? (tu.input.comps || []) : [];
 }

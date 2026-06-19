@@ -13,7 +13,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createClient } from "@supabase/supabase-js";
 import nodemailer from "nodemailer";
-import { extractDeal } from "./extract.mjs";
+import { extractDeal, findComps } from "./extract.mjs";
 
 // ── tiny .env loader (no dependency) ─────────────────────────────────────────
 try {
@@ -223,12 +223,20 @@ async function fetchBuildingPhoto(address, folderKey) {
   }
 }
 
-// Build the comps record from comps the model pulled out of the email/OM, or null.
-function compsFrom(extracted) {
-  const items = extracted.comps || [];
+// Build the comps record: any comps in the email/OM PLUS comps the bot finds by
+// searching the web. Null if neither turns up anything.
+async function buildComps(extracted) {
+  const om = extracted.comps || [];
+  let web = [];
+  try {
+    web = await findComps(extracted);
+  } catch (e) {
+    console.error("  comp search failed: " + e.message);
+  }
+  const items = [...om, ...web];
   if (!items.length) return null;
-  console.log(`  📊 ${items.length} comp(s) from materials`);
-  return { source: "broker materials", fetched_at: new Date().toISOString(), items };
+  console.log(`  📊 comps: ${om.length} from materials + ${web.length} found online`);
+  return { source: web.length ? "materials + web" : "materials", fetched_at: new Date().toISOString(), items };
 }
 
 // ── write paths ───────────────────────────────────────────────────────────────
@@ -271,7 +279,7 @@ async function applyInsert(email, extracted, flag) {
   const streetPhoto = await fetchBuildingPhoto(extracted.address, email.messageId);
   const photos = [...emailPhotos, ...(streetPhoto ? [streetPhoto] : [])];
   const update = buildUpdate(email, extracted);
-  const comps = compsFrom(extracted);
+  const comps = await buildComps(extracted);
 
   const row = {
     status: "pipeline",
@@ -343,7 +351,7 @@ async function applyUpdate(email, extracted, target) {
   const update = buildUpdate(email, extracted);
   if (update) patch.updates = mergeArrays(target.updates, [update]);
   if (!target.comps) {
-    const comps = compsFrom(extracted);
+    const comps = await buildComps(extracted);
     if (comps) patch.comps = comps;
   }
   // Always refresh the "latest email" summary shown live on the deal.
