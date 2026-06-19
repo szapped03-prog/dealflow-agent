@@ -223,6 +223,37 @@ async function fetchBuildingPhoto(address, folderKey) {
   }
 }
 
+// Pull a value estimate + comparable sales from RentCast for the address.
+// Best for residential / smaller multifamily; large commercial often has no data
+// (returns null then). No-op without an API key.
+const RENTCAST_API_KEY = process.env.RENTCAST_API_KEY || "";
+async function fetchComps(address) {
+  if (!RENTCAST_API_KEY || !address) return null;
+  try {
+    const url = `https://api.rentcast.io/v1/avm/value?address=${encodeURIComponent(address)}&compCount=8`;
+    const res = await fetch(url, { headers: { "X-Api-Key": RENTCAST_API_KEY, accept: "application/json" } });
+    if (!res.ok) {
+      if (res.status !== 404) console.error(`  comps fetch failed: ${res.status}`);
+      return null;
+    }
+    const d = await res.json();
+    const items = (d.comparables || []).slice(0, 8).map((c) => ({
+      address: c.formattedAddress || null,
+      price: c.price ?? null,
+      beds: c.bedrooms ?? null,
+      baths: c.bathrooms ?? null,
+      sqft: c.squareFootage ?? null,
+      distance: c.distance ?? null, // miles
+    }));
+    if (d.price == null && items.length === 0) return null;
+    console.log(`  📊 pulled comps (est $${d.price ? Number(d.price).toLocaleString() : "?"}, ${items.length} comps)`);
+    return { estimate: d.price ?? null, low: d.priceRangeLow ?? null, high: d.priceRangeHigh ?? null, source: "RentCast", fetched_at: new Date().toISOString(), items };
+  } catch (e) {
+    console.error(`  comps failed: ${e.message}`);
+    return null;
+  }
+}
+
 // ── write paths ───────────────────────────────────────────────────────────────
 const isImage = (d) => (d?.type || "").startsWith("image/"); // route image attachments to photos
 
@@ -263,6 +294,7 @@ async function applyInsert(email, extracted, flag) {
   const streetPhoto = await fetchBuildingPhoto(extracted.address, email.messageId);
   const photos = [...emailPhotos, ...(streetPhoto ? [streetPhoto] : [])];
   const update = buildUpdate(email, extracted);
+  const comps = await fetchComps(extracted.address);
 
   const row = {
     status: "pipeline",
@@ -282,6 +314,7 @@ async function applyInsert(email, extracted, flag) {
     documents: mergeDocs(extracted.documents, (email.uploadedDocs || []).filter((d) => !isImage(d))),
     photos,
     updates: update ? [update] : [],
+    comps,
     source_email_id: email.messageId,
     source_from: email.from,
     needs_review: flagged,
@@ -332,6 +365,10 @@ async function applyUpdate(email, extracted, target) {
   patch.photos = mergeArrays(target.photos, newPhotos);
   const update = buildUpdate(email, extracted);
   if (update) patch.updates = mergeArrays(target.updates, [update]);
+  if (!target.comps) {
+    const comps = await fetchComps(extracted.address);
+    if (comps) patch.comps = comps;
+  }
   // Always refresh the "latest email" summary shown live on the deal.
   patch.last_email_summary = extracted.summary;
   patch.last_email_at = email.date;
@@ -377,7 +414,7 @@ async function main() {
   // Pull the current pipeline + the set of already-ingested Message-IDs.
   const { data: deals, error: readErr } = await supabase
     .from("deals")
-    .select("id, nickname, address, stage, notes, contacts, key_dates, documents, photos, updates, source_email_id");
+    .select("id, nickname, address, stage, notes, contacts, key_dates, documents, photos, updates, comps, source_email_id");
   if (readErr) {
     console.error("Could not read deals from Supabase:", readErr.message);
     process.exit(1);
