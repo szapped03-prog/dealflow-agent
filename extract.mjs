@@ -136,8 +136,9 @@ const DEAL_SCHEMA = {
           date: { type: ["string", "null"], description: "Sale/lease date if given (ISO where possible)." },
           kind: { type: ["string", "null"], enum: ["sale", "rent", null], description: "sale comp or rent comp." },
           note: { type: ["string", "null"], description: "Any other detail: units, SF, beds, distance, notes." },
+          url: { type: ["string", "null"], description: "Source URL for this comp if one is given." },
         },
-        required: ["address", "price", "metric", "date", "kind", "note"],
+        required: ["address", "price", "metric", "date", "kind", "note", "url"],
       },
     },
   },
@@ -254,9 +255,10 @@ const COMP_ITEM = {
     metric: { type: ["string", "null"], description: "$/unit, $/SF, or cap rate if available." },
     date: { type: ["string", "null"], description: "Sale/lease date." },
     kind: { type: ["string", "null"], enum: ["sale", "rent", null] },
-    note: { type: ["string", "null"], description: "Source/citation + any detail (units, SF)." },
+    note: { type: ["string", "null"], description: "Source name + any detail (units, SF)." },
+    url: { type: ["string", "null"], description: "The source URL this comp came from." },
   },
-  required: ["address", "price", "metric", "date", "kind", "note"],
+  required: ["address", "price", "metric", "date", "kind", "note", "url"],
 };
 
 // Actively SEARCH THE WEB for recent comparable sales near a property and return
@@ -279,21 +281,41 @@ export async function findComps(deal) {
       `Only real, sourced transactions near this property and similar in type/size. If you can't find solid comps, say so.\n\nProperty: ${target}`,
   }];
 
+  // Collect the actual source URLs the web_search tool returned, across all turns.
+  const sources = [];
+  const collect = (content) => {
+    for (const b of content || []) {
+      if (b.type === "web_search_tool_result" && Array.isArray(b.content)) {
+        for (const r of b.content) {
+          if (r && r.type === "web_search_result" && r.url) sources.push({ title: r.title || "", url: r.url });
+        }
+      }
+    }
+  };
+
   let resp = await client.messages.create({ model: "claude-opus-4-8", max_tokens: 4000, tools, messages });
+  collect(resp.content);
   let guard = 0;
   while (resp.stop_reason === "pause_turn" && guard++ < 6) {
     messages.push({ role: "assistant", content: resp.content });
     resp = await client.messages.create({ model: "claude-opus-4-8", max_tokens: 4000, tools, messages });
+    collect(resp.content);
   }
   const findings = resp.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
   if (!findings) return [];
+
+  const seen = new Set();
+  const srcList = sources.filter((s) => s.url && !seen.has(s.url) && seen.add(s.url));
+  const sourcesText = srcList.length
+    ? "\n\nSOURCE URLS (set each comp's url to the one that best matches it by title/topic):\n" + srcList.map((s) => `- ${s.title} — ${s.url}`).join("\n")
+    : "";
 
   const s = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 2000,
     tools: [{ name: "record_comps", description: "Record the comparable sales found.", input_schema: { type: "object", additionalProperties: false, properties: { comps: { type: "array", items: COMP_ITEM } }, required: ["comps"] } }],
     tool_choice: { type: "tool", name: "record_comps" },
-    messages: [{ role: "user", content: `Extract the comparable sales below into structured data; put the source (e.g. "The Real Deal, Mar 2025") in note. Omit anything that isn't a real sourced comp.\n\n${findings}` }],
+    messages: [{ role: "user", content: `Extract the comparable sales below into structured data. Put the source name + date in note (e.g. "The Real Deal, Mar 2025"), and set url to the matching source URL from the list. Omit anything that isn't a real sourced comp.\n\nFINDINGS:\n${findings}${sourcesText}` }],
   });
   const tu = s.content.find((b) => b.type === "tool_use" && b.name === "record_comps");
   return tu ? (tu.input.comps || []) : [];
