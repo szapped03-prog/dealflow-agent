@@ -369,16 +369,45 @@ async function applyUpdate(email, extracted, target) {
   await sendReply(email, { action: "Updated", nickname: target.nickname, address: patch.address ?? target.address, asking_price: patch.asking_price, summary: extracted.summary });
 }
 
+// Record a vendor invoice / account statement into the invoices table.
+async function applyInvoice(email, extracted) {
+  const inv = extracted.invoice;
+  const row = {
+    type: inv.type === "statement" ? "statement" : "invoice",
+    vendor_name: inv.vendor_name,
+    invoice_number: inv.invoice_number,
+    invoice_date: inv.invoice_date,
+    amount: inv.amount,
+    email_subject: email.subject,
+    email_date: email.date,
+    email_sender: email.from,
+    source_email_id: email.messageId,
+    owner_email: email.fromAddress || email.from,
+  };
+  if (DRY_RUN) {
+    console.log(`  DRY: would record ${row.type} from ${row.vendor_name || "?"}`);
+    return;
+  }
+  const { error } = await supabase.from("invoices").insert(row);
+  if (error) {
+    if (/duplicate key|unique/i.test(error.message)) { console.log("  invoice already recorded — skipping"); return; }
+    throw error;
+  }
+  console.log(`  🧾 ${row.type.toUpperCase()}: ${[row.vendor_name, row.invoice_number, row.amount ? "$" + Number(row.amount).toLocaleString() : ""].filter(Boolean).join(" · ")}`);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 // Connect, run fn(client), always disconnect. Kept short-lived on purpose so the
 // IMAP socket is never held open across the slow per-email Claude calls (Gmail
 // times the connection out and crashes the run if you do).
-async function withImap(fn) {
+async function withImap(fn, creds) {
+  const user = creds?.user || process.env.GMAIL_USER;
+  const pass = creds?.pass || process.env.GMAIL_APP_PASSWORD;
   const client = new ImapFlow({
     host: "imap.gmail.com",
     port: 993,
     secure: true,
-    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+    auth: { user, pass },
     logger: false,
     socketTimeout: 120000,
   });
@@ -395,6 +424,63 @@ async function withImap(fn) {
   }
 }
 
+// Optional dedicated invoice inbox: if INVOICE_GMAIL_USER is set, read that mailbox
+// and record invoices/statements from it (deals in this inbox are ignored).
+async function processInvoiceInbox() {
+  const user = process.env.INVOICE_GMAIL_USER;
+  const pass = process.env.INVOICE_GMAIL_APP_PASSWORD;
+  if (!user || !pass) return;
+  const creds = { user, pass };
+  const { data: invRows } = await supabase.from("invoices").select("source_email_id");
+  const seenIds = new Set((invRows || []).filter((r) => r.source_email_id).map((r) => r.source_email_id));
+  const since = new Date(Date.now() - LOOKBACK_DAYS * 86400000);
+  const raw = await withImap(async (client) => {
+    const uids = await client.search({ seen: false, since }, { uid: true });
+    if (!uids || uids.length === 0) return [];
+    const out = [];
+    for await (const msg of client.fetch(uids, { uid: true, source: true }, { uid: true })) out.push({ uid: msg.uid, source: msg.source });
+    return out;
+  }, creds);
+  if (!raw.length) { console.log(`\nInvoice inbox (${user}): no new messages.`); return; }
+  console.log(`\nInvoice inbox (${user}): ${raw.length} message(s).`);
+  const toSeen = [];
+  for (const item of raw) {
+    const parsed = await simpleParser(item.source);
+    const messageId = parsed.messageId || `uid-${item.uid}@${user}`;
+    console.log(`• ${parsed.subject || "(no subject)"}`);
+    if (seenIds.has(messageId)) { console.log("  already recorded — skipping"); toSeen.push(item.uid); continue; }
+    const email = {
+      subject: parsed.subject || "(no subject)",
+      from: parsed.from?.text || "unknown",
+      fromAddress: parsed.from?.value?.[0]?.address || null,
+      date: (parsed.date || new Date()).toISOString(),
+      text: parsed.text || parsed.html?.replace(/<[^>]+>/g, " ") || "",
+      attachments: (parsed.attachments || []).map((a) => a.filename).filter(Boolean),
+      attachmentFiles: (parsed.attachments || []).filter((a) => a.content && a.filename).map((a) => ({ filename: a.filename, contentType: a.contentType, content: a.content })),
+      messageId,
+    };
+    try {
+      const extracted = await extractDeal(email);
+      if (extracted.invoice && extracted.invoice.is_invoice) {
+        await applyInvoice(email, extracted);
+      } else {
+        console.log("  not an invoice — skipping");
+      }
+      seenIds.add(messageId);
+      toSeen.push(item.uid);
+    } catch (err) {
+      console.error(`  ERROR — left unread for retry: ${err.message}`);
+    }
+  }
+  if (!DRY_RUN && toSeen.length) {
+    try {
+      await withImap(async (client) => { await client.messageFlagsAdd({ uid: toSeen }, ["\\Seen"], { uid: true }); }, creds);
+    } catch (err) {
+      console.error(`Could not mark invoice messages read: ${err.message}`);
+    }
+  }
+}
+
 async function main() {
   // Pull the current pipeline + the set of already-ingested Message-IDs.
   const { data: deals, error: readErr } = await supabase
@@ -405,6 +491,8 @@ async function main() {
     process.exit(1);
   }
   const alreadyIngested = new Set(deals.filter((d) => d.source_email_id).map((d) => d.source_email_id));
+  const { data: invRows } = await supabase.from("invoices").select("source_email_id");
+  for (const r of invRows || []) if (r.source_email_id) alreadyIngested.add(r.source_email_id);
 
   // ── Phase 1: pull raw messages FAST, then disconnect. ──
   const since = new Date(Date.now() - LOOKBACK_DAYS * 86400000);
@@ -455,7 +543,11 @@ async function main() {
     try {
       const extracted = await extractDeal(email);
       if (!extracted.is_real_estate_deal) {
-        console.log("  not a deal — skipping");
+        if (extracted.invoice && extracted.invoice.is_invoice) {
+          await applyInvoice(email, extracted);
+        } else {
+          console.log("  not a deal — skipping");
+        }
         toMarkSeen.push(item.uid);
         continue;
       }
@@ -491,6 +583,9 @@ async function main() {
   }
 
   console.log(`\nDone. ${processed} deal(s) written${DRY_RUN ? " (dry run — nothing saved)" : ""}.`);
+
+  // Then process the dedicated invoice inbox, if configured.
+  await processInvoiceInbox();
 }
 
 main().catch((err) => {

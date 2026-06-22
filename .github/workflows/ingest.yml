@@ -28,6 +28,8 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          INVOICE_GMAIL_USER: ${{ secrets.INVOICE_GMAIL_USER }}
+          INVOICE_GMAIL_APP_PASSWORD: ${{ secrets.INVOICE_GMAIL_APP_PASSWORD }}
           SMS_TO: ${{ secrets.SMS_TO }}
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}

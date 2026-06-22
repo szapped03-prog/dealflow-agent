@@ -141,6 +141,20 @@ const DEAL_SCHEMA = {
         required: ["address", "price", "metric", "date", "kind", "note", "url"],
       },
     },
+    invoice: {
+      type: "object",
+      additionalProperties: false,
+      description: "If the email is a VENDOR INVOICE or ACCOUNT STATEMENT (a bill to pay, not a real-estate deal), capture its details. Read attached invoice/statement PDFs.",
+      properties: {
+        is_invoice: { type: "boolean", description: "true if this email is a vendor invoice or account statement to track/pay." },
+        type: { type: ["string", "null"], enum: ["invoice", "statement", null], description: "'invoice' for a single bill; 'statement' for an account/monthly statement." },
+        vendor_name: { type: ["string", "null"], description: "The company/vendor billing." },
+        invoice_number: { type: ["string", "null"] },
+        invoice_date: { type: ["string", "null"], description: "Invoice/statement date, ISO YYYY-MM-DD." },
+        amount: { type: ["number", "null"], description: "Total amount due in whole dollars." },
+      },
+      required: ["is_invoice", "type", "vendor_name", "invoice_number", "invoice_date", "amount"],
+    },
   },
   required: [
     "is_real_estate_deal",
@@ -161,6 +175,7 @@ const DEAL_SCHEMA = {
     "summary",
     "status_update",
     "comps",
+    "invoice",
   ],
 };
 
@@ -173,7 +188,8 @@ Rules:
 - Today's date is provided; resolve relative dates ("next Friday") to ISO where you can, else leave note text.
 - PDF attachments (offering memos, financing memos, rent rolls, flyers) are included when present — READ them and use them as the PRIMARY source for price, units, asset type, address, submarket, broker, and financials. The email body is often just a short cover note.
 - status_update: set has_update=true only when the email reports ACTUAL progress on a building you'd track over time — construction milestones, financing/closing steps, leasing/occupancy changes, tenant issues, or delays. Capture progress / delays / tenants separately. For a first-time opportunity intro with no operational news, set has_update=false and leave the sub-fields null.
-- comps: if the email or any attached document includes comparable sales or rentals (a "comps", "comparables", or "rent comps" section is common in OMs), extract each one into the comps array. Do not invent comps — only include comps actually present in the materials.`;
+- comps: if the email or any attached document includes comparable sales or rentals (a "comps", "comparables", or "rent comps" section is common in OMs), extract each one into the comps array. Do not invent comps — only include comps actually present in the materials.
+- invoice: a forwarded email may instead be a VENDOR INVOICE or ACCOUNT STATEMENT (a bill — utilities, legal, contractor, services). If so, set is_real_estate_deal=false AND invoice.is_invoice=true, and extract vendor, invoice number, date, amount, and whether it's an 'invoice' or 'statement'. Read the attached invoice PDF for these. A property opportunity is NOT an invoice.`;
 
 /**
  * @param {{subject:string, from:string, date:string, text:string, attachments:string[]}} email
