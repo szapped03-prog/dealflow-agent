@@ -141,6 +141,19 @@ const DEAL_SCHEMA = {
         required: ["address", "price", "metric", "date", "kind", "note", "url"],
       },
     },
+    links: {
+      type: "array",
+      description: "Links found in the email or documents to a DEAL ROOM / data room / VDR / document portal / online listing (e.g. Crexi, Buildout, Box, Dropbox, RealNex, Revere, dealroom URLs). Each with a short label. Empty if none.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          label: { type: "string", description: "What the link is, e.g. 'Data room', 'Crexi listing', 'OM download'." },
+          url: { type: "string", description: "The URL." },
+        },
+        required: ["label", "url"],
+      },
+    },
     invoice: {
       type: "object",
       additionalProperties: false,
@@ -176,6 +189,7 @@ const DEAL_SCHEMA = {
     "summary",
     "status_update",
     "comps",
+    "links",
     "invoice",
   ],
 };
@@ -190,7 +204,8 @@ Rules:
 - PDF attachments (offering memos, financing memos, rent rolls, flyers) are included when present — READ them and use them as the PRIMARY source for price, units, asset type, address, submarket, broker, and financials. The email body is often just a short cover note.
 - status_update: set has_update=true only when the email reports ACTUAL progress on a building you'd track over time — construction milestones, financing/closing steps, leasing/occupancy changes, tenant issues, or delays. Capture progress / delays / tenants separately. For a first-time opportunity intro with no operational news, set has_update=false and leave the sub-fields null.
 - comps: if the email or any attached document includes comparable sales or rentals (a "comps", "comparables", or "rent comps" section is common in OMs), extract each one into the comps array. Do not invent comps — only include comps actually present in the materials.
-- invoice: a forwarded email may instead be a VENDOR INVOICE or ACCOUNT STATEMENT (a bill — utilities, legal, contractor, services). If so, set is_real_estate_deal=false AND invoice.is_invoice=true, and extract vendor, invoice number, date, amount, and whether it's an 'invoice' or 'statement'. Read the attached invoice PDF for these. A property opportunity is NOT an invoice.`;
+- invoice: a forwarded email may instead be a VENDOR INVOICE or ACCOUNT STATEMENT (a bill — utilities, legal, contractor, services). If so, set is_real_estate_deal=false AND invoice.is_invoice=true, and extract vendor, invoice number, date, amount, and whether it's an 'invoice' or 'statement'. Read the attached invoice PDF for these. A property opportunity is NOT an invoice.
+- links: capture any deal-room / data-room / VDR / document-portal / online-listing URLs from the email or documents into the links array, each with a short label. Don't include unsubscribe, email-tracking, or social links.`;
 
 /**
  * @param {{subject:string, from:string, date:string, text:string, attachments:string[]}} email

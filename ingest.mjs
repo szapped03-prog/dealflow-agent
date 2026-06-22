@@ -305,6 +305,7 @@ async function applyInsert(email, extracted, flag) {
     photos,
     updates: update ? [update] : [],
     comps,
+    links: extracted.links || [],
     source_email_id: email.messageId,
     source_from: email.from,
     needs_review: flagged,
@@ -359,6 +360,7 @@ async function applyUpdate(email, extracted, target) {
     const comps = await buildComps(extracted);
     if (comps) patch.comps = comps;
   }
+  if (extracted.links?.length) patch.links = mergeArrays(target.links, extracted.links);
   // Always refresh the "latest email" summary shown live on the deal.
   patch.last_email_summary = extracted.summary;
   patch.last_email_at = email.date;
@@ -553,7 +555,7 @@ async function main() {
   // Pull the current pipeline + the set of already-ingested Message-IDs.
   const { data: deals, error: readErr } = await supabase
     .from("deals")
-    .select("id, nickname, address, stage, notes, contacts, key_dates, documents, photos, updates, comps, source_email_id");
+    .select("id, nickname, address, stage, notes, contacts, key_dates, documents, photos, updates, comps, links, source_email_id");
   if (readErr) {
     console.error("Could not read deals from Supabase:", readErr.message);
     process.exit(1);
