@@ -152,8 +152,9 @@ const DEAL_SCHEMA = {
         invoice_number: { type: ["string", "null"] },
         invoice_date: { type: ["string", "null"], description: "Invoice/statement date, ISO YYYY-MM-DD." },
         amount: { type: ["number", "null"], description: "Total amount due in whole dollars." },
+        property: { type: ["string", "null"], description: "The property/building address this invoice is for, if it references one (e.g. the service address on a utility bill)." },
       },
-      required: ["is_invoice", "type", "vendor_name", "invoice_number", "invoice_date", "amount"],
+      required: ["is_invoice", "type", "vendor_name", "invoice_number", "invoice_date", "amount", "property"],
     },
   },
   required: [

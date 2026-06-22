@@ -372,12 +372,30 @@ async function applyUpdate(email, extracted, target) {
 // Record a vendor invoice / account statement into the invoices table.
 async function applyInvoice(email, extracted) {
   const inv = extracted.invoice;
+  // Try to link the invoice to a deal by the property it references.
+  let deal_id = null;
+  let deal_nickname = null;
+  if (inv.property) {
+    const { data: deals } = await supabase.from("deals").select("id,nickname,address");
+    const n = norm(inv.property);
+    const match = (deals || []).find((d) => {
+      const da = norm(d.address);
+      const dn = norm(d.nickname);
+      if (!n) return false;
+      if (da === n || dn === n) return true;
+      return !!da && (da.includes(n) || n.includes(da)) && Math.min(da.length, n.length) >= 8;
+    });
+    if (match) { deal_id = match.id; deal_nickname = match.nickname; }
+  }
   const row = {
     type: inv.type === "statement" ? "statement" : "invoice",
+    status: "owed",
     vendor_name: inv.vendor_name,
     invoice_number: inv.invoice_number,
     invoice_date: inv.invoice_date,
     amount: inv.amount,
+    deal_id,
+    deal_nickname,
     email_subject: email.subject,
     email_date: email.date,
     email_sender: email.from,
