@@ -29,6 +29,11 @@ const DRY_RUN = !!process.env.DRY_RUN;
 const LOOKBACK_DAYS = Number(process.env.LOOKBACK_DAYS || 30);
 const CONFIDENCE_FLOOR = 0.45; // below this we still insert, but flag for review
 
+// Detect errors that mean the whole run is broken (out of API credit, bad keys)
+// rather than one bad email — so we can alert instead of silently failing forever.
+let fatalAlerted = false;
+const isFatalApi = (msg) => /credit balance|billing|authentication|x-api-key|api key|insufficient/i.test(msg || "");
+
 // Text alerts via Twilio when a new deal lands. Needs TWILIO_ACCOUNT_SID,
 // TWILIO_AUTH_TOKEN, TWILIO_FROM (your Twilio number, E.164) and SMS_TO (your
 // phone, E.164 e.g. +13053191776). Silently no-ops if any are unset.
@@ -528,6 +533,11 @@ async function processInvoiceInbox() {
       toSeen.push(item.uid);
     } catch (err) {
       console.error(`  ERROR — left unread for retry: ${err.message}`);
+      if (isFatalApi(err.message) && !fatalAlerted) {
+        fatalAlerted = true;
+        process.exitCode = 1;
+        await sendAlert("DealFlow bot is failing", `The agent hit a likely fatal error (check your Anthropic credit balance / API keys):\n\n${err.message}\n\nNew deals/invoices won't import until this is resolved.`);
+      }
     }
   }
   if (!DRY_RUN && toSeen.length) {
@@ -627,6 +637,11 @@ async function main() {
       toMarkSeen.push(item.uid);
     } catch (err) {
       console.error(`  ERROR — left unread for retry: ${err.message}`);
+      if (isFatalApi(err.message) && !fatalAlerted) {
+        fatalAlerted = true;
+        process.exitCode = 1;
+        await sendAlert("DealFlow bot is failing", `The agent hit a likely fatal error (check your Anthropic credit balance / API keys):\n\n${err.message}\n\nNew deals/invoices won't import until this is resolved.`);
+      }
     }
   }
 
@@ -647,7 +662,8 @@ async function main() {
   await processInvoiceInbox();
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("Fatal:", err);
+  try { await sendAlert("DealFlow run crashed", `${err?.message || err}`); } catch {}
   process.exit(1);
 });
