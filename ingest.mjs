@@ -526,6 +526,7 @@ async function main() {
 
   if (raw.length === 0) {
     console.log("No new (unread) messages to process.");
+    await processInvoiceInbox();
     return;
   }
   console.log(`Found ${raw.length} unread message(s) in the last ${LOOKBACK_DAYS} days.\n`);
