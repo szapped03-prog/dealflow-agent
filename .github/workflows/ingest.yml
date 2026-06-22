@@ -35,5 +35,6 @@ jobs:
           TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
           TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
           GOOGLE_MAPS_KEY: ${{ secrets.GOOGLE_MAPS_KEY }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           GMAIL_MAILBOX: INBOX
           LOOKBACK_DAYS: '30'

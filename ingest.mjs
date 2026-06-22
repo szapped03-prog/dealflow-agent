@@ -412,6 +412,46 @@ async function applyInvoice(email, extracted) {
     throw error;
   }
   console.log(`  🧾 ${row.type.toUpperCase()}: ${[row.vendor_name, row.invoice_number, row.amount ? "$" + Number(row.amount).toLocaleString() : ""].filter(Boolean).join(" · ")}`);
+  await alertOnTrend(row);
+}
+
+// Email an alert (default to the deals inbox, or ALERT_EMAIL) for invoice trends.
+async function sendAlert(subject, body) {
+  const to = process.env.ALERT_EMAIL || process.env.GMAIL_USER;
+  if (DRY_RUN || !to) return;
+  try {
+    _mailer ??= nodemailer.createTransport({
+      host: "smtp.gmail.com", port: 465, secure: true,
+      auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+    });
+    await _mailer.sendMail({ from: process.env.GMAIL_USER, to, subject: `[DealFlow alert] ${subject}`, text: body });
+    console.log("  🔔 alert sent: " + subject);
+  } catch (e) {
+    console.error("  alert failed: " + e.message);
+  }
+}
+
+// On a new invoice, if the vendor bills recurringly and this amount spikes well
+// above their average, send a heads-up.
+async function alertOnTrend(row) {
+  if (!row.vendor_name || !row.amount) return;
+  const { data: prior } = await supabase
+    .from("invoices")
+    .select("amount")
+    .eq("vendor_name", row.vendor_name)
+    .neq("source_email_id", row.source_email_id || "");
+  const amts = (prior || []).map((p) => p.amount).filter((a) => a != null);
+  if (amts.length < 2) return; // not enough history to call it recurring
+  const avg = amts.reduce((a, b) => a + b, 0) / amts.length;
+  if (row.amount > avg * 1.4) {
+    const pct = Math.round((row.amount / avg - 1) * 100);
+    await sendAlert(
+      `${row.vendor_name} invoice up ${pct}%`,
+      `${row.vendor_name} just billed $${Number(row.amount).toLocaleString()}, ${pct}% above their average of $${Math.round(avg).toLocaleString()} across ${amts.length} prior invoices.` +
+        (row.deal_nickname ? `\nProperty: ${row.deal_nickname}` : "") +
+        `\n\nSee → https://dealflow-self-eight.vercel.app/invoices`
+    );
+  }
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
