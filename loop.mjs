@@ -8,14 +8,16 @@ const SECS = Number(process.env.LOOP_SECONDS || 60); // default every 60 seconds
 function once() {
   const started = Date.now();
   const p = spawn("node", ["ingest.mjs"], { stdio: "inherit" });
-  p.on("exit", (code) => {
-    console.log(`[loop] run finished (exit ${code}, ${Math.round((Date.now() - started) / 1000)}s) — next in ${SECS}s\n`);
-    setTimeout(once, SECS * 1000);
-  });
-  p.on("error", (e) => {
-    console.error(`[loop] failed to start run: ${e.message} — retrying in ${SECS}s`);
-    setTimeout(once, SECS * 1000);
-  });
+  const scheduleNext = (label) => {
+    // Fixed-rate: aim for SECS from the START of this run, not the end. If the
+    // run took longer than SECS, fire the next one immediately (wait = 0).
+    const elapsed = Date.now() - started;
+    const wait = Math.max(0, SECS * 1000 - elapsed);
+    console.log(`[loop] ${label} (${Math.round(elapsed / 1000)}s) — next in ${Math.round(wait / 1000)}s\n`);
+    setTimeout(once, wait);
+  };
+  p.on("exit", (code) => scheduleNext(`run finished (exit ${code})`));
+  p.on("error", (e) => scheduleNext(`failed to start run: ${e.message}`));
 }
 
 console.log(`[loop] DealFlow agent — checking every ${SECS}s`);
