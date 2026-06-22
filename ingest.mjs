@@ -573,6 +573,16 @@ async function main() {
     for await (const msg of client.fetch(uids, { uid: true, source: true }, { uid: true })) {
       out.push({ uid: msg.uid, source: msg.source });
     }
+    // Mark them ALL read right now, on this same fresh connection — far more
+    // reliable than a second reconnect after the slow Claude work. Any email that
+    // then fails processing gets flipped back to unread in Phase 3 so it retries.
+    if (!DRY_RUN) {
+      try {
+        await client.messageFlagsAdd({ uid: uids }, ["\\Seen"], { uid: true });
+      } catch (e) {
+        console.error(`Could not mark messages read on fetch: ${e.message}`);
+      }
+    }
     return out;
   });
 
@@ -583,8 +593,10 @@ async function main() {
   }
   console.log(`Found ${raw.length} unread message(s) in the last ${LOOKBACK_DAYS} days.\n`);
 
-  // ── Phase 2: process offline (no live IMAP). Collect UIDs to mark read. ──
-  const toMarkSeen = [];
+  // ── Phase 2: process offline (no live IMAP). Everything is already marked
+  // read (Phase 1); collect only the UIDs whose processing FAILED, to flip back
+  // to unread for a retry next run. ──
+  const toMarkUnseen = [];
   let processed = 0;
   for (const item of raw) {
     const parsed = await simpleParser(item.source);
@@ -593,8 +605,7 @@ async function main() {
     console.log(`• ${subject}`);
 
     if (alreadyIngested.has(messageId)) {
-      console.log("  already ingested — skipping");
-      toMarkSeen.push(item.uid);
+      console.log("  already ingested — skipping (already read)");
       continue;
     }
 
@@ -619,7 +630,6 @@ async function main() {
         } else {
           console.log("  not a deal — skipping");
         }
-        toMarkSeen.push(item.uid);
         continue;
       }
 
@@ -636,18 +646,18 @@ async function main() {
       }
       processed++;
       alreadyIngested.add(messageId);
-      toMarkSeen.push(item.uid);
     } catch (err) {
       // A duplicate-key / unique-constraint error means this email was already
-      // recorded as a deal — it's done, not failing. Mark it read so we don't
-      // re-run comps + Street View on it every single cycle (that costs money).
+      // recorded as a deal — it's done, not failing. Leave it read (it already
+      // is) so we don't re-run comps + Street View every cycle (that costs money).
       if (/duplicate key|unique constraint|already exists/i.test(err.message)) {
-        console.log("  already recorded — marking read (no retry)");
+        console.log("  already recorded — leaving read (no retry)");
         alreadyIngested.add(messageId);
-        toMarkSeen.push(item.uid);
         continue;
       }
-      console.error(`  ERROR — left unread for retry: ${err.message}`);
+      // Real failure — flip back to unread so it retries next run.
+      console.error(`  ERROR — flipping back to unread for retry: ${err.message}`);
+      toMarkUnseen.push(item.uid);
       if (isFatalApi(err.message) && !fatalAlerted) {
         fatalAlerted = true;
         process.exitCode = 1;
@@ -656,14 +666,15 @@ async function main() {
     }
   }
 
-  // ── Phase 3: reconnect briefly and mark everything we handled as read. ──
-  if (!DRY_RUN && toMarkSeen.length) {
+  // ── Phase 3: only the failures need touching — flip them back to unread so
+  // they get retried on the next run. Everything else is already marked read. ──
+  if (!DRY_RUN && toMarkUnseen.length) {
     try {
       await withImap(async (client) => {
-        await client.messageFlagsAdd({ uid: toMarkSeen }, ["\\Seen"], { uid: true });
+        await client.messageFlagsRemove({ uid: toMarkUnseen }, ["\\Seen"], { uid: true });
       });
     } catch (err) {
-      console.error(`Could not mark messages read (they'll be reconsidered next run): ${err.message}`);
+      console.error(`Could not restore unread flag on failed emails: ${err.message}`);
     }
   }
 
