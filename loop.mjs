@@ -3,7 +3,7 @@
 // agent genuinely checks every few minutes (GitHub's scheduler throttles to hours).
 import { spawn } from "node:child_process";
 
-const SECS = Number(process.env.LOOP_SECONDS || 300); // default every 5 minutes
+const SECS = Number(process.env.LOOP_SECONDS || 60); // default every 60 seconds
 
 function once() {
   const started = Date.now();
