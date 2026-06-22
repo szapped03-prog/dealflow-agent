@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Reads forwarded deal emails from a shared inbox and populates the DealFlow Supabase pipeline.",
   "scripts": {
+    "start": "node loop.mjs",
     "ingest": "node ingest.mjs",
     "ingest:dry": "DRY_RUN=1 node ingest.mjs"
   },
