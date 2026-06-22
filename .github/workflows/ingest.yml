@@ -2,9 +2,9 @@ name: DealFlow email ingest
 
 # Runs the agent in the cloud on a schedule (no local machine needed).
 on:
-  schedule:
-    - cron: '*/5 * * * *' # every 5 minutes (GitHub's reliable floor)
-  workflow_dispatch: {} # lets us trigger a run by hand from the Actions tab
+  # Scheduled run disabled — the agent now runs continuously on Railway (loop.mjs).
+  # Kept manual-trigger only as a backup/one-off.
+  workflow_dispatch: {}
 
 # If a run is still going when the next fires, don't pile up.
 concurrency:
