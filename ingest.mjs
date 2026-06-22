@@ -638,6 +638,15 @@ async function main() {
       alreadyIngested.add(messageId);
       toMarkSeen.push(item.uid);
     } catch (err) {
+      // A duplicate-key / unique-constraint error means this email was already
+      // recorded as a deal — it's done, not failing. Mark it read so we don't
+      // re-run comps + Street View on it every single cycle (that costs money).
+      if (/duplicate key|unique constraint|already exists/i.test(err.message)) {
+        console.log("  already recorded — marking read (no retry)");
+        alreadyIngested.add(messageId);
+        toMarkSeen.push(item.uid);
+        continue;
+      }
       console.error(`  ERROR — left unread for retry: ${err.message}`);
       if (isFatalApi(err.message) && !fatalAlerted) {
         fatalAlerted = true;
