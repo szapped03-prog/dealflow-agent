@@ -710,7 +710,7 @@ async function main() {
   // Pull the current pipeline + the set of already-ingested Message-IDs.
   const { data: deals, error: readErr } = await supabase
     .from("deals")
-    .select("id, nickname, address, status, track, stage, notes, contacts, key_dates, documents, photos, updates, comps, links, leases, source_email_id");
+    .select("*"); // select * so a not-yet-migrated column can never crash the whole agent
   if (readErr) {
     console.error("Could not read deals from Supabase:", readErr.message);
     process.exit(1);
