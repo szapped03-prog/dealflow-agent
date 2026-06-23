@@ -2,11 +2,10 @@ name: DealFlow email ingest
 
 # Runs the agent in the cloud on a schedule (no local machine needed).
 on:
-  # Runs on GitHub's infrastructure every 5 min (free on this public repo), and
-  # ALWAYS on the latest committed code — no deploy pipeline to break. Each run
-  # bursts a few checks so effective latency is ~60s. This replaces Railway.
-  schedule:
-    - cron: '*/5 * * * *'
+  # Schedule DISABLED — Railway (loop.mjs) is the always-on host and runs every
+  # ~60s, which GitHub's throttled cron can't match. Kept as a manual backup
+  # (workflow_dispatch) that always runs the latest committed code if Railway is
+  # ever down.
   workflow_dispatch: {}
 
 # If a run is still going when the next fires, don't pile up.
