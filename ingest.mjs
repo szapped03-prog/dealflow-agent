@@ -463,6 +463,43 @@ async function applyUpdate(email, extracted, target) {
 }
 
 // Record a vendor invoice / account statement into the invoices table.
+// File a tenant lease under the building it belongs to. Matches the property by
+// address/name, uploads the lease PDF to storage, and appends a lease record to
+// that property's `leases`. If no building matches, alerts so it's filed by hand.
+async function applyLease(email, extracted, deals) {
+  const L = extracted.lease;
+  const q = norm(L.property || extracted.address || "");
+  const target = q
+    ? (deals || []).find((d) => {
+        const da = norm(d.address), dn = norm(d.nickname);
+        return da === q || dn === q || (!!da && (da.includes(q) || q.includes(da)) && Math.min(da.length, q.length) >= 8);
+      })
+    : null;
+
+  const uploaded = DRY_RUN ? [] : await uploadAttachments(email);
+  const leaseDoc = uploaded.find((d) => /pdf/i.test(d.type || "") || /\.pdf$/i.test(d.name || "")) || uploaded[0] || null;
+  const entry = {
+    tenant: L.tenant, unit: L.unit, monthly_rent: L.monthly_rent, annual_rent: L.annual_rent,
+    start_date: L.start_date, end_date: L.end_date, term_months: L.term_months,
+    lease_type: L.lease_type || "new", status: "active", note: L.note,
+    doc_path: leaseDoc?.path || null, doc_name: leaseDoc?.name || email.attachments?.[0] || (email.subject || "Lease"),
+    source_email_id: email.messageId, added_at: new Date().toISOString(), from: email.from,
+  };
+
+  if (!target) {
+    console.log(`  📄 lease for "${L.property || "?"}" — no matching building`);
+    await sendAlert("Lease received — no matching building",
+      `A lease${L.tenant ? ` for ${L.tenant}` : ""} arrived for "${L.property || "unknown"}" but no owned property matched it. File it manually in the portfolio.\n\nSubject: ${email.subject}`);
+    return;
+  }
+  if (DRY_RUN) { console.log(`  DRY: would file lease (${L.tenant || "?"}) under "${target.nickname}"`); return; }
+  const leases = mergeArrays(target.leases, [entry]);
+  const { error } = await supabase.from("deals").update({ leases }).eq("id", target.id);
+  if (error) throw error;
+  target.leases = leases; // keep snapshot current for this batch
+  console.log(`  📄 LEASE filed under "${target.nickname}": ${[L.tenant, L.unit, L.monthly_rent ? "$" + Number(L.monthly_rent).toLocaleString() + "/mo" : ""].filter(Boolean).join(" · ")}`);
+}
+
 async function applyInvoice(email, extracted) {
   const inv = extracted.invoice;
   // Try to link the invoice to a deal by the property it references.
@@ -642,7 +679,7 @@ async function main() {
   // Pull the current pipeline + the set of already-ingested Message-IDs.
   const { data: deals, error: readErr } = await supabase
     .from("deals")
-    .select("id, nickname, address, status, track, stage, notes, contacts, key_dates, documents, photos, updates, comps, links, source_email_id");
+    .select("id, nickname, address, status, track, stage, notes, contacts, key_dates, documents, photos, updates, comps, links, leases, source_email_id");
   if (readErr) {
     console.error("Could not read deals from Supabase:", readErr.message);
     process.exit(1);
@@ -709,7 +746,9 @@ async function main() {
 
       const extracted = await extractDeal(email);
       if (!extracted.is_real_estate_deal) {
-        if (extracted.invoice && extracted.invoice.is_invoice) {
+        if (extracted.lease && extracted.lease.is_lease) {
+          await applyLease(email, extracted, deals);
+        } else if (extracted.invoice && extracted.invoice.is_invoice) {
           await applyInvoice(email, extracted);
         } else {
           console.log("  not a deal — skipping");

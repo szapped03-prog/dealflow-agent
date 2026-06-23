@@ -160,6 +160,25 @@ const DEAL_SCHEMA = {
         required: ["label", "url"],
       },
     },
+    lease: {
+      type: "object",
+      additionalProperties: false,
+      description: "If this email is or contains a LEASE for a building the firm OWNS (a signed lease, lease agreement, lease abstract, renewal, or amendment — for a tenant in an existing property), capture it. A lease is NOT a property acquisition and NOT an invoice. Read the attached lease PDF.",
+      properties: {
+        is_lease: { type: "boolean", description: "true if this email is/contains a tenant lease, renewal, or amendment for an existing building." },
+        property: { type: ["string", "null"], description: "The building address or name this lease is for (used to file it under the right property)." },
+        tenant: { type: ["string", "null"], description: "Tenant / lessee name." },
+        unit: { type: ["string", "null"], description: "Unit / suite / apartment number." },
+        monthly_rent: { type: ["number", "null"], description: "Monthly rent in whole dollars." },
+        annual_rent: { type: ["number", "null"], description: "Annual rent in whole dollars if stated." },
+        start_date: { type: ["string", "null"], description: "Lease commencement date, ISO YYYY-MM-DD." },
+        end_date: { type: ["string", "null"], description: "Lease expiration date, ISO YYYY-MM-DD." },
+        term_months: { type: ["integer", "null"], description: "Lease term length in months." },
+        lease_type: { type: ["string", "null"], enum: ["new", "renewal", "amendment", null], description: "Whether it's a new lease, a renewal, or an amendment." },
+        note: { type: ["string", "null"], description: "Any other key terms: free rent, escalations, options, security deposit." },
+      },
+      required: ["is_lease", "property", "tenant", "unit", "monthly_rent", "annual_rent", "start_date", "end_date", "term_months", "lease_type", "note"],
+    },
     invoice: {
       type: "object",
       additionalProperties: false,
@@ -197,6 +216,7 @@ const DEAL_SCHEMA = {
     "status_update",
     "comps",
     "links",
+    "lease",
     "invoice",
   ],
 };
@@ -212,6 +232,7 @@ Rules:
 - status_update: set has_update=true only when the email reports ACTUAL progress on a building you'd track over time — construction milestones, financing/closing steps, leasing/occupancy changes, tenant issues, or delays. Capture progress / delays / tenants separately. For a first-time opportunity intro with no operational news, set has_update=false and leave the sub-fields null.
 - comps: if the email or any attached document includes comparable sales or rentals (a "comps", "comparables", or "rent comps" section is common in OMs), extract each one into the comps array. Do not invent comps — only include comps actually present in the materials.
 - invoice: a forwarded email may instead be a VENDOR INVOICE or ACCOUNT STATEMENT (a bill — utilities, legal, contractor, services). If so, set is_real_estate_deal=false AND invoice.is_invoice=true, and extract vendor, invoice number, date, amount, and whether it's an 'invoice' or 'statement'. Read the attached invoice PDF for these. A property opportunity is NOT an invoice.
+- lease: a forwarded email may be a TENANT LEASE for a building the firm already owns (a signed lease, lease agreement/abstract, renewal, or amendment). If so, set is_real_estate_deal=false AND lease.is_lease=true, and extract the building (property), tenant, unit, rent, term, and dates from the lease PDF. A lease is for an EXISTING owned building — it is NOT a new acquisition and NOT an invoice.
 - links: capture any deal-room / data-room / VDR / document-portal / online-listing URLs from the email or documents into the links array, each with a short label. Don't include unsubscribe, email-tracking, or social links.
 - track: classify which pipeline the email belongs to. 'acquisition' = a property offered for sale that we might buy (most broker emails — the default). 'refi' = refinancing or a new loan on a property we already own (lender term sheets, rate quotes, loan talk on an existing building). 'disposition' = we are selling/marketing a property we own. If it's clearly not about our own owned asset, use 'acquisition'.`;
 
