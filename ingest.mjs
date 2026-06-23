@@ -146,6 +146,33 @@ const norm = (s) =>
     .replace(/\s+/g, " ")
     .trim();
 
+// Expand common street abbreviations so "280 E Houston St" matches "280 East
+// Houston Street". Used to robustly match a lease/invoice to its building.
+const ABBR = { st: "street", str: "street", ave: "avenue", av: "avenue", blvd: "boulevard", rd: "road", dr: "drive", ln: "lane", ct: "court", pl: "place", sq: "square", ter: "terrace", pkwy: "parkway", hwy: "highway", e: "east", w: "west", n: "north", s: "south", ste: "suite", apt: "apartment", fl: "floor", fwy: "freeway", pky: "parkway" };
+const normAddr = (s) => norm(s).split(" ").map((t) => ABBR[t] || t).join(" ");
+
+// Find the building (owned/pipeline deal) a lease or invoice refers to, tolerant
+// of abbreviations: requires the street number to match plus a street-name word.
+function findBuilding(query, deals) {
+  const q = normAddr(query);
+  if (!q) return null;
+  const qt = new Set(q.split(" "));
+  const qNum = [...qt].find((t) => /^\d+$/.test(t));
+  let best = null, bestScore = 0;
+  for (const d of deals || []) {
+    for (const cand of [d.address, d.nickname]) {
+      const c = normAddr(cand);
+      if (!c) continue;
+      if (c === q) return d;
+      const ct = new Set(c.split(" "));
+      if (qNum && !ct.has(qNum)) continue; // street number must line up
+      const overlap = [...qt].filter((t) => t.length > 2 && ct.has(t)).length;
+      if (qNum && overlap >= 1 && overlap > bestScore) { best = d; bestScore = overlap; }
+    }
+  }
+  return best;
+}
+
 // Merge two jsonb arrays, de-duplicating by serialized value.
 const mergeArrays = (existing, incoming) => {
   const seen = new Set();
@@ -468,13 +495,7 @@ async function applyUpdate(email, extracted, target) {
 // that property's `leases`. If no building matches, alerts so it's filed by hand.
 async function applyLease(email, extracted, deals) {
   const L = extracted.lease;
-  const q = norm(L.property || extracted.address || "");
-  const target = q
-    ? (deals || []).find((d) => {
-        const da = norm(d.address), dn = norm(d.nickname);
-        return da === q || dn === q || (!!da && (da.includes(q) || q.includes(da)) && Math.min(da.length, q.length) >= 8);
-      })
-    : null;
+  const target = findBuilding(L.property || extracted.address || "", deals);
 
   const kind = L.is_move_out ? "move-out" : "lease";
   if (!target) {
@@ -538,14 +559,7 @@ async function applyInvoice(email, extracted) {
   let deal_nickname = null;
   if (inv.property) {
     const { data: deals } = await supabase.from("deals").select("id,nickname,address");
-    const n = norm(inv.property);
-    const match = (deals || []).find((d) => {
-      const da = norm(d.address);
-      const dn = norm(d.nickname);
-      if (!n) return false;
-      if (da === n || dn === n) return true;
-      return !!da && (da.includes(n) || n.includes(da)) && Math.min(da.length, n.length) >= 8;
-    });
+    const match = findBuilding(inv.property, deals);
     if (match) { deal_id = match.id; deal_nickname = match.nickname; }
   }
   const row = {
