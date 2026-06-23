@@ -1,8 +1,10 @@
 // Daily digest: summarize the pipeline + invoices and email it. Runs once a day
 // from its own GitHub Actions schedule (digest.yml). DRY_RUN=1 prints only.
 import { readFileSync } from "node:fs";
+import { setDefaultResultOrder } from "node:dns";
 import { createClient } from "@supabase/supabase-js";
 import nodemailer from "nodemailer";
+setDefaultResultOrder("ipv4first");
 
 try {
   for (const line of readFileSync(new URL("./.env", import.meta.url), "utf8").split("\n")) {
@@ -45,7 +47,7 @@ console.log(body);
 
 const to = process.env.ALERT_EMAIL || process.env.GMAIL_USER;
 if (to && !process.env.DRY_RUN) {
-  const t = nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD } });
+  const t = nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, family: 4, auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD } });
   await t.sendMail({ from: process.env.GMAIL_USER, to, subject: `[DealFlow] Daily digest — ${new Date().toLocaleDateString()}`, text: body });
   console.log(`\nsent to ${to}`);
 }

@@ -8,8 +8,11 @@
 //   node check.mjs
 
 import { readFileSync } from "node:fs";
+import { setDefaultResultOrder } from "node:dns";
 import { createClient } from "@supabase/supabase-js";
 import nodemailer from "nodemailer";
+
+setDefaultResultOrder("ipv4first"); // avoid IPv6 ENETUNREACH on some hosts
 
 // tiny .env loader (no dep) — harmless on CI where env is already set.
 try {
@@ -34,7 +37,7 @@ async function sendAlert(subject, body) {
   const to = process.env.ALERT_EMAIL || process.env.GMAIL_USER;
   if (!to) { console.error("No ALERT_EMAIL/GMAIL_USER set — cannot send alert"); return; }
   _mailer ??= nodemailer.createTransport({
-    host: "smtp.gmail.com", port: 465, secure: true,
+    host: "smtp.gmail.com", port: 465, secure: true, family: 4,
     auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
   });
   await _mailer.sendMail({ from: process.env.GMAIL_USER, to, subject: `[DealFlow alert] ${subject}`, text: body });

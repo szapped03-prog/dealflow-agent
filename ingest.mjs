@@ -10,11 +10,17 @@
 
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { setDefaultResultOrder } from "node:dns";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createClient } from "@supabase/supabase-js";
 import nodemailer from "nodemailer";
 import { extractDeal, findComps } from "./extract.mjs";
+
+// Railway's containers have broken IPv6. Node otherwise tries Gmail's IPv6
+// address first and hits ENETUNREACH — which is exactly why the mark-as-read
+// reconnect and reply emails were intermittently failing. Force IPv4 everywhere.
+setDefaultResultOrder("ipv4first");
 
 // ── tiny .env loader (no dependency) ─────────────────────────────────────────
 try {
@@ -87,6 +93,7 @@ async function sendReply(email, info) {
       host: "smtp.gmail.com",
       port: 465,
       secure: true,
+      family: 4,
       auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
     });
     const subject = /^re:/i.test(email.subject || "") ? email.subject : `Re: ${email.subject || "Deal"}`;
@@ -451,7 +458,7 @@ async function sendAlert(subject, body) {
   if (DRY_RUN || !to) return;
   try {
     _mailer ??= nodemailer.createTransport({
-      host: "smtp.gmail.com", port: 465, secure: true,
+      host: "smtp.gmail.com", port: 465, secure: true, family: 4,
       auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
     });
     await _mailer.sendMail({ from: process.env.GMAIL_USER, to, subject: `[DealFlow alert] ${subject}`, text: body });
@@ -498,6 +505,7 @@ async function withImap(fn, creds) {
     auth: { user, pass },
     logger: false,
     socketTimeout: 120000,
+    tls: { family: 4 }, // force IPv4 (Railway IPv6 is unreachable)
   });
   // ImapFlow emits 'error' outside the promise chain; without a listener an async
   // socket error would crash the process. Callers handle failures via try/catch.
