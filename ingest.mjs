@@ -422,7 +422,14 @@ async function applyInsert(email, extracted, flag, track, deals) {
     console.log(`  DRY: would INSERT "${row.nickname}"${flagged ? " (flagged)" : ""}`);
     return null;
   }
-  const { data, error } = await supabase.from("deals").insert(row).select("id").single();
+  let { data, error } = await supabase.from("deals").insert(row).select("id").single();
+  if (error && /column .* does not exist/i.test(error.message || "")) {
+    // A migration hasn't been applied yet — drop the newest columns and retry so
+    // the deal still imports (it adopts the column default once migrated).
+    const { track: _t, source_deal_id: _s, ...safe } = row;
+    console.error(`  insert hit a missing column (${error.message}) — retrying without track/source_deal_id`);
+    ({ data, error } = await supabase.from("deals").insert(safe).select("id").single());
+  }
   if (error) throw error;
   console.log(`  INSERT "${row.nickname}"${flagged ? " (flagged for review)" : ""}`);
   await textNewDeal(row.nickname, row.address, row.asking_price);
