@@ -9,6 +9,7 @@
 //   DRY_RUN=1 node ingest.mjs  # extract + print, write nothing, mark nothing
 
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createClient } from "@supabase/supabase-js";
@@ -118,6 +119,19 @@ async function sendReply(email, info) {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// A STABLE per-email id for dedupe + source_email_id. Prefer the real Message-ID;
+// if the email has none, hash its content (sender/date/subject/body) so the SAME
+// email always yields the SAME id across runs. (The old uid-based fallback was
+// unstable — IMAP UIDs can change — which could double-insert or mis-dedupe.)
+const stableId = (parsed) =>
+  parsed.messageId ||
+  "sha-" +
+    createHash("sha1")
+      .update(`${parsed.from?.text || ""}|${(parsed.date && parsed.date.toISOString && parsed.date.toISOString()) || parsed.date || ""}|${parsed.subject || ""}|${(parsed.text || "").slice(0, 800)}`)
+      .digest("hex")
+      .slice(0, 24) + "@dealflow.local";
+
 const norm = (s) =>
   (s || "")
     .toLowerCase()
@@ -318,13 +332,17 @@ async function applyInsert(email, extracted, flag) {
 
   if (DRY_RUN) {
     console.log(`  DRY: would INSERT "${row.nickname}"${flagged ? " (flagged)" : ""}`);
-    return;
+    return null;
   }
-  const { error } = await supabase.from("deals").insert(row);
+  const { data, error } = await supabase.from("deals").insert(row).select("id").single();
   if (error) throw error;
   console.log(`  INSERT "${row.nickname}"${flagged ? " (flagged for review)" : ""}`);
   await textNewDeal(row.nickname, row.address, row.asking_price);
   await sendReply(email, { action: "Added", nickname: row.nickname, address: row.address, asking_price: row.asking_price, summary: extracted.summary });
+  // Return the row (with id) so the caller can add it to the in-memory snapshot,
+  // preventing a second email about the same property in this batch from inserting
+  // a duplicate (matchDeal would otherwise not see this brand-new row).
+  return { ...row, id: data.id };
 }
 
 async function applyUpdate(email, extracted, target) {
@@ -374,6 +392,10 @@ async function applyUpdate(email, extracted, target) {
   const { error } = await supabase.from("deals").update(patch).eq("id", target.id);
   if (error) throw error;
   console.log(`  UPDATE "${target.nickname}" (${target.id.slice(0, 8)})`);
+  // Apply the merged values onto the in-memory snapshot so a later email in this
+  // same batch that also matches this deal merges from the up-to-date state
+  // (not the stale pre-update copy) and doesn't clobber what we just wrote.
+  Object.assign(target, patch);
   await sendReply(email, { action: "Updated", nickname: target.nickname, address: patch.address ?? target.address, asking_price: patch.asking_price, summary: extracted.summary });
 }
 
@@ -511,21 +533,21 @@ async function processInvoiceInbox() {
   console.log(`\nInvoice inbox (${user}): ${raw.length} message(s).`);
   const toSeen = [];
   for (const item of raw) {
-    const parsed = await simpleParser(item.source);
-    const messageId = parsed.messageId || `uid-${item.uid}@${user}`;
-    console.log(`• ${parsed.subject || "(no subject)"}`);
-    if (seenIds.has(messageId)) { console.log("  already recorded — skipping"); toSeen.push(item.uid); continue; }
-    const email = {
-      subject: parsed.subject || "(no subject)",
-      from: parsed.from?.text || "unknown",
-      fromAddress: parsed.from?.value?.[0]?.address || null,
-      date: (parsed.date || new Date()).toISOString(),
-      text: parsed.text || parsed.html?.replace(/<[^>]+>/g, " ") || "",
-      attachments: (parsed.attachments || []).map((a) => a.filename).filter(Boolean),
-      attachmentFiles: (parsed.attachments || []).filter((a) => a.content && a.filename).map((a) => ({ filename: a.filename, contentType: a.contentType, content: a.content })),
-      messageId,
-    };
     try {
+      const parsed = await simpleParser(item.source);
+      const messageId = stableId(parsed);
+      console.log(`• ${parsed.subject || "(no subject)"}`);
+      if (seenIds.has(messageId)) { console.log("  already recorded — skipping"); toSeen.push(item.uid); continue; }
+      const email = {
+        subject: parsed.subject || "(no subject)",
+        from: parsed.from?.text || "unknown",
+        fromAddress: parsed.from?.value?.[0]?.address || null,
+        date: (parsed.date || new Date()).toISOString(),
+        text: parsed.text || parsed.html?.replace(/<[^>]+>/g, " ") || "",
+        attachments: (parsed.attachments || []).map((a) => a.filename).filter(Boolean),
+        attachmentFiles: (parsed.attachments || []).filter((a) => a.content && a.filename).map((a) => ({ filename: a.filename, contentType: a.contentType, content: a.content })),
+        messageId,
+      };
       const extracted = await extractDeal(email);
       if (extracted.invoice && extracted.invoice.is_invoice) {
         await applyInvoice(email, extracted);
@@ -592,31 +614,35 @@ async function main() {
   const toMarkSeen = [];
   let processed = 0;
   for (const item of raw) {
-    const parsed = await simpleParser(item.source);
-    const messageId = parsed.messageId || `uid-${item.uid}@${process.env.GMAIL_USER}`;
-    const subject = parsed.subject || "(no subject)";
-    console.log(`• ${subject}`);
-
-    if (alreadyIngested.has(messageId)) {
-      console.log("  already ingested — skipping");
-      toMarkSeen.push(item.uid);
-      continue;
-    }
-
-    const email = {
-      subject,
-      from: parsed.from?.text || "unknown",
-      fromAddress: parsed.from?.value?.[0]?.address || null,
-      date: (parsed.date || new Date()).toISOString(),
-      text: parsed.text || parsed.html?.replace(/<[^>]+>/g, " ") || "",
-      attachments: (parsed.attachments || []).map((a) => a.filename).filter(Boolean),
-      attachmentFiles: (parsed.attachments || [])
-        .filter((a) => a.content && a.filename)
-        .map((a) => ({ filename: a.filename, contentType: a.contentType, content: a.content })),
-      messageId,
-    };
-
+    // The ENTIRE body is in one try/catch — including parsing — so a single
+    // malformed message can never throw out of the loop and abort the batch
+    // (which would skip Phase 3 marking and re-pay for everything next run).
+    let messageId;
     try {
+      const parsed = await simpleParser(item.source);
+      messageId = stableId(parsed);
+      const subject = parsed.subject || "(no subject)";
+      console.log(`• ${subject}`);
+
+      if (alreadyIngested.has(messageId)) {
+        console.log("  already ingested — skipping");
+        toMarkSeen.push(item.uid);
+        continue;
+      }
+
+      const email = {
+        subject,
+        from: parsed.from?.text || "unknown",
+        fromAddress: parsed.from?.value?.[0]?.address || null,
+        date: (parsed.date || new Date()).toISOString(),
+        text: parsed.text || parsed.html?.replace(/<[^>]+>/g, " ") || "",
+        attachments: (parsed.attachments || []).map((a) => a.filename).filter(Boolean),
+        attachmentFiles: (parsed.attachments || [])
+          .filter((a) => a.content && a.filename)
+          .map((a) => ({ filename: a.filename, contentType: a.contentType, content: a.content })),
+        messageId,
+      };
+
       const extracted = await extractDeal(email);
       if (!extracted.is_real_estate_deal) {
         if (extracted.invoice && extracted.invoice.is_invoice) {
@@ -637,18 +663,23 @@ async function main() {
       if (decision.kind === "update") {
         await applyUpdate(email, extracted, decision.target);
       } else {
-        await applyInsert(email, extracted, decision.flag);
+        const inserted = await applyInsert(email, extracted, decision.flag);
+        // Keep the in-memory snapshot current so a later email in THIS batch about
+        // the same property updates it instead of inserting a duplicate.
+        if (inserted) deals.push(inserted);
       }
       processed++;
       alreadyIngested.add(messageId);
       toMarkSeen.push(item.uid);
     } catch (err) {
-      // A duplicate-key / unique-constraint error means this email was already
-      // recorded as a deal — it's done, not failing. Mark it read so we don't
-      // re-run comps + Street View on it every cycle (that costs money).
-      if (/duplicate key|unique constraint|already exists/i.test(err.message)) {
+      // The deals.source_email_id unique violation means this exact email was
+      // already recorded — done, not failing — so mark it read. Scope narrowly to
+      // THAT constraint so an unrelated unique error never marks unwritten mail read.
+      const dupEmail = (err.code === "23505" || /duplicate key|unique constraint/i.test(err.message || "")) &&
+        /source_email_id/i.test((err.message || "") + " " + (err.details || ""));
+      if (dupEmail) {
         console.log("  already recorded — marking read (no retry)");
-        alreadyIngested.add(messageId);
+        if (messageId) alreadyIngested.add(messageId);
         toMarkSeen.push(item.uid);
         continue;
       }
@@ -705,5 +736,8 @@ main()
   .catch(async (err) => {
     console.error("Fatal:", err);
     try { await sendAlert("DealFlow run crashed", `${err?.message || err}`); } catch {}
+    // Still stamp the heartbeat: the process DID run a cycle, so the watchdog
+    // shouldn't also cry "agent is DOWN" — the crash alert above is the signal.
+    try { await writeHeartbeat(); } catch {}
     process.exit(1);
   });

@@ -265,7 +265,11 @@ export async function extractDeal(email) {
   try {
     resp = await call(docBlocks.length > 0);
   } catch (e) {
-    if (!docBlocks.length) throw e;
+    // Only fall back to a degraded text-only read for an actual PDF/document
+    // problem. For a transient or fatal API error, RETHROW so the email stays
+    // unread and retries with the PDF intact — never silently drop the OM data.
+    const transient = /overloaded|rate.?limit|\b429\b|\b529\b|timeout|etimedout|econn|socket|network|credit|billing|api key|authentication|x-api-key|insufficient/i.test(e.message || "");
+    if (!docBlocks.length || transient) throw e;
     console.error(`  PDF read failed (${e.message}); retrying text-only`);
     resp = await call(false);
   }
