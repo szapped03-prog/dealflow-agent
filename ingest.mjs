@@ -724,10 +724,17 @@ async function main() {
 async function writeHeartbeat() {
   if (DRY_RUN) return;
   try {
-    await supabase.from("agent_status").upsert({ id: 1, last_run_at: new Date().toISOString() });
+    // Write to the storage bucket (which already exists) — NO database table or
+    // SQL setup required. We CHECK the returned error (the old version ignored it
+    // and falsely logged success against a table that didn't exist).
+    const body = Buffer.from(JSON.stringify({ at: new Date().toISOString() }));
+    const { error } = await supabase.storage
+      .from(BUCKET)
+      .upload("_status/heartbeat.json", body, { upsert: true, contentType: "application/json" });
+    if (error) { console.error("  heartbeat write FAILED: " + error.message); return; }
     console.log("  ♥ heartbeat written");
   } catch (e) {
-    console.error("  heartbeat write failed: " + e.message);
+    console.error("  heartbeat write FAILED: " + e.message);
   }
 }
 
