@@ -28,17 +28,21 @@ try {
 } catch {}
 const agentOk = hbAgeMin <= 10;
 
-// 2) Inbox backlog — how many emails are waiting to be processed?
-let unread = null;
-try {
-  const c = new ImapFlow({ host: "imap.gmail.com", port: 993, secure: true, logger: false, tls: { family: 4 },
-    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD } });
-  c.on("error", () => {});
-  await c.connect();
-  const lock = await c.getMailboxLock("INBOX");
-  try { unread = (await c.search({ seen: false }, { uid: true }) || []).length; }
-  finally { lock.release(); await c.logout().catch(() => {}); }
-} catch (e) { console.error("inbox check failed: " + e.message); }
+// 2) Inbox backlog — how many emails are waiting in each inbox?
+async function unreadCount(user, pass) {
+  if (!user || !pass) return undefined; // inbox not configured
+  try {
+    const c = new ImapFlow({ host: "imap.gmail.com", port: 993, secure: true, logger: false, tls: { family: 4 },
+      auth: { user, pass } });
+    c.on("error", () => {});
+    await c.connect();
+    const lock = await c.getMailboxLock("INBOX");
+    try { return (await c.search({ seen: false }, { uid: true }) || []).length; }
+    finally { lock.release(); await c.logout().catch(() => {}); }
+  } catch (e) { console.error(`inbox check failed (${user}): ${e.message}`); return null; }
+}
+const unread = await unreadCount(process.env.GMAIL_USER, process.env.GMAIL_APP_PASSWORD);
+const invUnread = await unreadCount(process.env.INVOICE_GMAIL_USER, process.env.INVOICE_GMAIL_APP_PASSWORD);
 
 // 3) Pipeline + invoice snapshot
 const { data: deals } = await sb.from("deals").select("nickname,status,stage,asking_price,needs_review,created_at");
@@ -57,6 +61,7 @@ const owedTotal = owed.reduce((s, i) => s + (i.amount || 0), 0);
 const issues = [];
 if (!agentOk) issues.push("agent may be down");
 if (unread && unread > 0) issues.push(`${unread} unprocessed`);
+if (invUnread && invUnread > 0) issues.push(`${invUnread} invoice(s) unprocessed`);
 const ok = issues.length === 0;
 const subject = `[DealFlow] ${ok ? "✅ OK" : "⚠️ " + issues.join(", ")} — ${newDeals.length} new this hour`;
 
@@ -64,7 +69,9 @@ const lines = [];
 lines.push(`DealFlow status · ${new Date().toLocaleString()}`);
 lines.push("");
 lines.push(`Agent: ${agentOk ? `✅ running (last check ${Math.round(hbAgeMin)} min ago)` : `⚠️ NO heartbeat in ${Number.isFinite(hbAgeMin) ? Math.round(hbAgeMin) + " min" : "a long time"} — check Railway`}`);
-lines.push(`Inbox: ${unread == null ? "(couldn't check)" : unread === 0 ? "✅ all processed (0 waiting)" : `⚠️ ${unread} email(s) waiting`}`);
+const inboxLine = (n) => n === undefined ? "(not configured)" : n == null ? "(couldn't check)" : n === 0 ? "✅ 0 waiting" : `⚠️ ${n} waiting`;
+lines.push(`Deals inbox: ${inboxLine(unread)}`);
+lines.push(`Invoice inbox: ${inboxLine(invUnread)}`);
 lines.push("");
 lines.push(`Last hour: +${newDeals.length} deal(s), +${newInv.length} invoice(s)`);
 newDeals.slice(0, 8).forEach((d) => lines.push(`  • ${d.nickname}${d.asking_price ? ` — ${fmt(d.asking_price)}` : ""}`));
