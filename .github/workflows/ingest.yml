@@ -2,8 +2,11 @@ name: DealFlow email ingest
 
 # Runs the agent in the cloud on a schedule (no local machine needed).
 on:
-  # Scheduled run disabled — the agent now runs continuously on Railway (loop.mjs).
-  # Kept manual-trigger only as a backup/one-off.
+  # Runs on GitHub's infrastructure every 5 min (free on this public repo), and
+  # ALWAYS on the latest committed code — no deploy pipeline to break. Each run
+  # bursts a few checks so effective latency is ~60s. This replaces Railway.
+  schedule:
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 # If a run is still going when the next fires, don't pile up.
@@ -21,7 +24,14 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
-      - run: node ingest.mjs
+      - name: Ingest burst (~4 checks over ~4 min)
+        run: |
+          for i in 1 2 3 4; do
+            echo "::group::ingest pass $i"
+            node ingest.mjs || true
+            echo "::endgroup::"
+            if [ "$i" -lt 4 ]; then sleep 55; fi
+          done
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
