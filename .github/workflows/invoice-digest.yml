@@ -1,0 +1,27 @@
+name: DealFlow invoice summary
+
+# Daily invoice-focused recap (backlog, new invoices, owed by vendor, flags).
+on:
+  schedule:
+    - cron: '10 13 * * *' # ~9am US Eastern, just after the daily summary
+  workflow_dispatch: {}
+
+jobs:
+  invoice-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: node invoice-digest.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          INVOICE_GMAIL_USER: ${{ secrets.INVOICE_GMAIL_USER }}
+          INVOICE_GMAIL_APP_PASSWORD: ${{ secrets.INVOICE_GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
