@@ -273,11 +273,12 @@ function mergeDocs(extractedDocs, uploaded) {
 }
 
 async function applyInsert(email, extracted, flag) {
-  const flagged = !!flag || extracted.confidence < CONFIDENCE_FLOOR;
+  const conf = typeof extracted.confidence === "number" ? extracted.confidence : 0.5;
+  const flagged = !!flag || conf < CONFIDENCE_FLOOR;
   const noteParts = [];
   if (flag) noteParts.push(`[NEEDS REVIEW: ${flag}]`);
-  if (extracted.confidence < CONFIDENCE_FLOOR)
-    noteParts.push(`[LOW CONFIDENCE ${extracted.confidence.toFixed(2)}]`);
+  if (conf < CONFIDENCE_FLOOR)
+    noteParts.push(`[LOW CONFIDENCE ${conf.toFixed(2)}]`);
   noteParts.push(noteLine(email, extracted));
 
   const emailPhotos = (email.uploadedDocs || []).filter(isImage).map((d) => ({ path: d.path, name: d.name }));
