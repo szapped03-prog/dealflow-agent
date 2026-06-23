@@ -160,14 +160,22 @@ const mergeArrays = (existing, incoming) => {
   return out;
 };
 
-// Decide how an extracted deal relates to what's already in the pipeline.
+// Track of an existing deal row (default acquisition for legacy rows).
+const trackOf = (d) => d.track || "acquisition";
+// Where a freshly-routed deal starts in each pipeline.
+const TRACK_START = { acquisition: "sourcing", refi: "refi_evaluating", disposition: "sell_prep" };
+
+// Decide how an extracted deal relates to what's already in the pipeline. Only
+// matches within the SAME track, so a refi email never overwrites the
+// acquisition record for the same building (they're separate processes).
 // Returns { kind: 'update'|'insert', target?, flag? }.
-function matchDeal(extracted, deals) {
+function matchDeal(extracted, deals, track) {
   const exAddr = norm(extracted.address);
   const exNick = norm(extracted.nickname);
+  const pool = deals.filter((d) => trackOf(d) === track);
 
   // Confident match: identical normalized address, or identical nickname.
-  const strong = deals.find(
+  const strong = pool.find(
     (d) => (exAddr && norm(d.address) === exAddr) || (exNick && norm(d.nickname) === exNick)
   );
   if (strong) return { kind: "update", target: strong };
@@ -177,7 +185,7 @@ function matchDeal(extracted, deals) {
   if (exAddr) {
     const exTokens = new Set(exAddr.split(" "));
     const exNum = [...exTokens].find((t) => /^\d+$/.test(t));
-    const loose = deals.filter((d) => {
+    const loose = pool.filter((d) => {
       const dTokens = new Set(norm(d.address).split(" "));
       if (exNum && !dTokens.has(exNum)) return false;
       const overlap = [...exTokens].filter((t) => dTokens.has(t)).length;
@@ -327,7 +335,7 @@ function mergeDocs(extractedDocs, uploaded) {
   return mergeArrays(mentioned, uploaded);
 }
 
-async function applyInsert(email, extracted, flag) {
+async function applyInsert(email, extracted, flag, track, deals) {
   const conf = typeof extracted.confidence === "number" ? extracted.confidence : 0.5;
   const flagged = !!flag || conf < CONFIDENCE_FLOOR;
   const noteParts = [];
@@ -342,15 +350,27 @@ async function applyInsert(email, extracted, flag) {
   const update = buildUpdate(email, extracted);
   const comps = await buildComps(extracted);
 
+  // For a refi/disposition email, link it back to the owned property it's about
+  // (so it shows as that asset's process), and start it in that track's stage.
+  let sourceDealId = null;
+  if (track !== "acquisition" && extracted.address) {
+    const ex = norm(extracted.address);
+    const owned = (deals || []).find((d) => norm(d.address) === ex && (d.status === "owned" || trackOf(d) === "acquisition"));
+    if (owned) sourceDealId = owned.id;
+  }
+  const stage = track === "acquisition" ? (extracted.stage || "sourcing") : TRACK_START[track];
+
   const row = {
     status: "pipeline",
+    track,
+    source_deal_id: sourceDealId,
     nickname: extracted.nickname || email.subject?.slice(0, 60) || "Untitled deal",
     address: extracted.address,
     asset_type: extracted.asset_type,
     submarket: extracted.submarket,
     units: extracted.units,
     asking_price: extracted.asking_price,
-    stage: extracted.stage || "sourcing",
+    stage,
     broker: extracted.broker,
     firm: extracted.firm,
     next_step: extracted.next_step,
@@ -401,8 +421,10 @@ async function applyUpdate(email, extracted, target) {
   setIf("broker", extracted.broker);
   setIf("firm", extracted.firm);
   setIf("next_step", extracted.next_step);
-  // Stage only advances on an explicit signal — don't silently flip a deal back to sourcing.
-  if (extracted.stage && extracted.stage !== "sourcing") patch.stage = extracted.stage;
+  // Stage only advances on an explicit signal — and ONLY for acquisition deals
+  // (the extracted stage enum is acquisition-only; never write it onto a refi/
+  // sale deal, whose stages are different).
+  if (trackOf(target) === "acquisition" && extracted.stage && extracted.stage !== "sourcing") patch.stage = extracted.stage;
 
   patch.notes = [target.notes, noteLine(email, extracted)].filter(Boolean).join("\n");
   patch.contacts = mergeArrays(target.contacts, extracted.contacts);
@@ -620,7 +642,7 @@ async function main() {
   // Pull the current pipeline + the set of already-ingested Message-IDs.
   const { data: deals, error: readErr } = await supabase
     .from("deals")
-    .select("id, nickname, address, stage, notes, contacts, key_dates, documents, photos, updates, comps, links, source_email_id");
+    .select("id, nickname, address, status, track, stage, notes, contacts, key_dates, documents, photos, updates, comps, links, source_email_id");
   if (readErr) {
     console.error("Could not read deals from Supabase:", readErr.message);
     process.exit(1);
@@ -701,11 +723,13 @@ async function main() {
         ? (email.attachments || []).map((name) => ({ name, type: "attachment", path: null, note: "dry run — not uploaded" }))
         : await uploadAttachments(email);
 
-      const decision = matchDeal(extracted, deals);
+      const track = ["acquisition", "refi", "disposition"].includes(extracted.track) ? extracted.track : "acquisition";
+      const decision = matchDeal(extracted, deals, track);
       if (decision.kind === "update") {
         await applyUpdate(email, extracted, decision.target);
       } else {
-        const inserted = await applyInsert(email, extracted, decision.flag);
+        const inserted = await applyInsert(email, extracted, decision.flag, track, deals);
+        if (track !== "acquisition") console.log(`  → routed to ${track} pipeline`);
         // Keep the in-memory snapshot current so a later email in THIS batch about
         // the same property updates it instead of inserting a duplicate.
         if (inserted) deals.push(inserted);

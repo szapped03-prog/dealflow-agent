@@ -57,7 +57,13 @@ const DEAL_SCHEMA = {
     stage: {
       type: ["string", "null"],
       enum: ["sourcing", "loi", "under_contract", "due_diligence", "closed", "dead", null],
-      description: "Pipeline stage implied by the email. Default to 'sourcing' for a fresh opportunity.",
+      description: "Acquisition pipeline stage implied by the email (only meaningful when track='acquisition'). Default to 'sourcing' for a fresh opportunity.",
+    },
+    track: {
+      type: ["string", "null"],
+      enum: ["acquisition", "refi", "disposition", null],
+      description:
+        "Which pipeline this email belongs to. 'acquisition' = a property being OFFERED FOR SALE that the firm might BUY (most broker emails / new opportunities — the DEFAULT). 'refi' = REFINANCING or a new LOAN on a building the firm ALREADY OWNS (lender quotes, term sheets, rate/loan talk on an existing asset). 'disposition' = the firm is SELLING / marketing a property it OWNS. When unsure, use 'acquisition'.",
     },
     broker: { type: ["string", "null"], description: "Primary broker's name." },
     firm: { type: ["string", "null"], description: "Brokerage / firm name." },
@@ -183,6 +189,7 @@ const DEAL_SCHEMA = {
     "broker",
     "firm",
     "next_step",
+    "track",
     "contacts",
     "key_dates",
     "documents",
@@ -205,7 +212,8 @@ Rules:
 - status_update: set has_update=true only when the email reports ACTUAL progress on a building you'd track over time — construction milestones, financing/closing steps, leasing/occupancy changes, tenant issues, or delays. Capture progress / delays / tenants separately. For a first-time opportunity intro with no operational news, set has_update=false and leave the sub-fields null.
 - comps: if the email or any attached document includes comparable sales or rentals (a "comps", "comparables", or "rent comps" section is common in OMs), extract each one into the comps array. Do not invent comps — only include comps actually present in the materials.
 - invoice: a forwarded email may instead be a VENDOR INVOICE or ACCOUNT STATEMENT (a bill — utilities, legal, contractor, services). If so, set is_real_estate_deal=false AND invoice.is_invoice=true, and extract vendor, invoice number, date, amount, and whether it's an 'invoice' or 'statement'. Read the attached invoice PDF for these. A property opportunity is NOT an invoice.
-- links: capture any deal-room / data-room / VDR / document-portal / online-listing URLs from the email or documents into the links array, each with a short label. Don't include unsubscribe, email-tracking, or social links.`;
+- links: capture any deal-room / data-room / VDR / document-portal / online-listing URLs from the email or documents into the links array, each with a short label. Don't include unsubscribe, email-tracking, or social links.
+- track: classify which pipeline the email belongs to. 'acquisition' = a property offered for sale that we might buy (most broker emails — the default). 'refi' = refinancing or a new loan on a property we already own (lender term sheets, rate quotes, loan talk on an existing building). 'disposition' = we are selling/marketing a property we own. If it's clearly not about our own owned asset, use 'acquisition'.`;
 
 /**
  * @param {{subject:string, from:string, date:string, text:string, attachments:string[]}} email
