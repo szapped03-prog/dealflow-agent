@@ -684,8 +684,23 @@ async function main() {
   await processInvoiceInbox();
 }
 
-main().catch(async (err) => {
-  console.error("Fatal:", err);
-  try { await sendAlert("DealFlow run crashed", `${err?.message || err}`); } catch {}
-  process.exit(1);
-});
+// Heartbeat: stamp "the agent completed a check just now" into Supabase. An
+// independent watchdog (check.mjs, run by GitHub Actions) alerts if this goes
+// stale — so a dead Railway worker can't fail silently.
+async function writeHeartbeat() {
+  if (DRY_RUN) return;
+  try {
+    await supabase.from("agent_status").upsert({ id: 1, last_run_at: new Date().toISOString() });
+    console.log("  ♥ heartbeat written");
+  } catch (e) {
+    console.error("  heartbeat write failed: " + e.message);
+  }
+}
+
+main()
+  .then(writeHeartbeat)
+  .catch(async (err) => {
+    console.error("Fatal:", err);
+    try { await sendAlert("DealFlow run crashed", `${err?.message || err}`); } catch {}
+    process.exit(1);
+  });
