@@ -150,14 +150,20 @@ const norm = (s) =>
 // Houston Street". Used to robustly match a lease/invoice to its building.
 const ABBR = { st: "street", str: "street", ave: "avenue", av: "avenue", blvd: "boulevard", rd: "road", dr: "drive", ln: "lane", ct: "court", pl: "place", sq: "square", ter: "terrace", pkwy: "parkway", hwy: "highway", e: "east", w: "west", n: "north", s: "south", ste: "suite", apt: "apartment", fl: "floor", fwy: "freeway", pky: "parkway" };
 const normAddr = (s) => norm(s).split(" ").map((t) => ABBR[t] || t).join(" ");
+// Generic words that must NOT count as a street-name match (else "100 East St"
+// would match "100 East Broadway" just because they share "east"/"street").
+const GENERIC = new Set([...Object.values(ABBR), "new", "york", "ny", "the", "ste", "fl"]);
 
-// Find the building (owned/pipeline deal) a lease or invoice refers to, tolerant
-// of abbreviations: requires the street number to match plus a street-name word.
+// Find the building (owned/pipeline deal) a lease or invoice refers to. To match,
+// the street NUMBER must line up AND at least one real street-NAME word must
+// coincide (generic words like east/street don't count). Numberless queries need
+// two name words. This avoids filing under the wrong building.
 function findBuilding(query, deals) {
   const q = normAddr(query);
   if (!q) return null;
   const qt = new Set(q.split(" "));
   const qNum = [...qt].find((t) => /^\d+$/.test(t));
+  const qWords = [...qt].filter((t) => t.length > 2 && !/^\d+$/.test(t) && !GENERIC.has(t));
   let best = null, bestScore = 0;
   for (const d of deals || []) {
     for (const cand of [d.address, d.nickname]) {
@@ -166,8 +172,9 @@ function findBuilding(query, deals) {
       if (c === q) return d;
       const ct = new Set(c.split(" "));
       if (qNum && !ct.has(qNum)) continue; // street number must line up
-      const overlap = [...qt].filter((t) => t.length > 2 && ct.has(t)).length;
-      if (qNum && overlap >= 1 && overlap > bestScore) { best = d; bestScore = overlap; }
+      const overlap = qWords.filter((t) => ct.has(t)).length;
+      const need = qNum ? 1 : 2; // with a number, 1 name word suffices; without, need 2
+      if (overlap >= need && overlap > bestScore) { best = d; bestScore = overlap; }
     }
   }
   return best;
@@ -382,7 +389,8 @@ async function applyInsert(email, extracted, flag, track, deals) {
   let sourceDealId = null;
   if (track !== "acquisition" && extracted.address) {
     const ex = norm(extracted.address);
-    const owned = (deals || []).find((d) => norm(d.address) === ex && (d.status === "owned" || trackOf(d) === "acquisition"));
+    const cands = (deals || []).filter((d) => norm(d.address) === ex && (d.status === "owned" || trackOf(d) === "acquisition"));
+    const owned = cands.find((d) => d.status === "owned") || cands[0]; // prefer the owned asset
     if (owned) sourceDealId = owned.id;
   }
   const stage = track === "acquisition" ? (extracted.stage || "sourcing") : TRACK_START[track];
@@ -513,21 +521,25 @@ async function applyLease(email, extracted, deals) {
   }
   if (DRY_RUN) { console.log(`  DRY: would file ${kind} (${L.tenant || "?"}) under "${target.nickname}"`); return; }
 
-  // ── Move-out: mark the tenant's existing active lease as moved out. ──
+  // ── Move-out: mark the tenant's existing active lease as moved out. Pick the
+  // BEST-scoring active lease (tenant+unit beats unit-only beats tenant-only) so
+  // we never flip the wrong lease when a unit was re-tenanted or names collide. ──
   if (L.is_move_out) {
     const t = norm(L.tenant), u = norm(L.unit);
     const existing = (target.leases || []);
-    let matched = false;
-    const leases = existing.map((lz) => {
-      if (matched || lz.status === "moved_out") return lz;
-      const tenantHit = t && norm(lz.tenant) === t;
-      const unitHit = u && norm(lz.unit) === u;
-      if (tenantHit || unitHit) {
-        matched = true;
-        return { ...lz, status: "moved_out", move_out_date: L.move_out_date || null, note: [lz.note, `Moved out${L.move_out_date ? " " + L.move_out_date : ""}`].filter(Boolean).join(" · ") };
-      }
-      return lz;
-    });
+    const score = (lz) => {
+      if (lz.status === "moved_out") return 0;
+      const th = t && norm(lz.tenant) === t, uh = u && norm(lz.unit) === u;
+      return (th && uh) ? 3 : uh ? 2 : th ? 1 : 0;
+    };
+    let bestIdx = -1, bestScore = 0;
+    existing.forEach((lz, i) => { const s = score(lz); if (s > bestScore) { bestScore = s; bestIdx = i; } });
+    const matched = bestIdx >= 0;
+    const leases = existing.map((lz, i) =>
+      i === bestIdx
+        ? { ...lz, status: "moved_out", move_out_date: L.move_out_date || null, note: [lz.note, `Moved out${L.move_out_date ? " " + L.move_out_date : ""}`].filter(Boolean).join(" · ") }
+        : lz
+    );
     // No prior lease on file → record the move-out as its own entry for the trail.
     if (!matched) leases.push({
       tenant: L.tenant, unit: L.unit, monthly_rent: null, annual_rent: null, start_date: null,
@@ -552,7 +564,9 @@ async function applyLease(email, extracted, deals) {
     doc_path: leaseDoc?.path || null, doc_name: leaseDoc?.name || email.attachments?.[0] || (email.subject || "Lease"),
     source_email_id: email.messageId, added_at: new Date().toISOString(), from: email.from,
   };
-  const leases = mergeArrays(target.leases, [entry]);
+  // Idempotent: a re-sent lease (same email) replaces its prior entry rather than
+  // duplicating — mergeArrays can't dedupe because added_at/doc_path differ.
+  const leases = [...(target.leases || []).filter((l) => !l.source_email_id || l.source_email_id !== email.messageId), entry];
   const { error } = await supabase.from("deals").update({ leases }).eq("id", target.id);
   if (error) throw error;
   target.leases = leases; // keep snapshot current for this batch
@@ -739,6 +753,9 @@ async function main() {
   const alreadyIngested = new Set(deals.filter((d) => d.source_email_id).map((d) => d.source_email_id));
   const { data: invRows } = await supabase.from("invoices").select("source_email_id");
   for (const r of invRows || []) if (r.source_email_id) alreadyIngested.add(r.source_email_id);
+  // Also treat already-filed leases/move-outs as ingested, so a re-sent lease
+  // email is skipped at the top instead of duplicating inside a property.
+  for (const d of deals) for (const l of d.leases || []) if (l && l.source_email_id) alreadyIngested.add(l.source_email_id);
 
   // ── Phase 1: pull raw messages FAST, then disconnect. ──
   const since = new Date(Date.now() - LOOKBACK_DAYS * 86400000);
