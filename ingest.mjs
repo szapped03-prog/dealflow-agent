@@ -222,26 +222,60 @@ async function uploadAttachments(email) {
   return docs;
 }
 
-// Pull a Google Street View photo of the building from its address and store it
-// as a property photo. Metadata check first (free) so we don't save a blank
-// "no imagery" image or pay for one. Returns a photo record or null.
+// Pull a Google Street View photo of the building. To avoid the "wrong picture"
+// problem (loose address match + camera pointing the wrong way) we: (1) geocode
+// the address to exact coordinates, (2) find the nearest street panorama, and
+// (3) point the camera FROM the panorama TOWARD the building. Returns null if we
+// can't confidently place it (better no photo than a wrong one).
 const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_KEY || "";
+
+// Free, keyless geocode (server-side, so no CORS). US-biased.
+async function geocodeAddress(address) {
+  try {
+    const r = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=${encodeURIComponent(address)}`,
+      { headers: { "User-Agent": "DealFlow/1.0 (SMA Equities)", "Accept-Language": "en" } }
+    );
+    const d = await r.json();
+    if (Array.isArray(d) && d[0]) return { lat: parseFloat(d[0].lat), lng: parseFloat(d[0].lon) };
+  } catch { /* fall through */ }
+  return null;
+}
+
+// Compass bearing (deg) from point a to point b.
+function bearingDeg(a, b) {
+  const toR = (x) => (x * Math.PI) / 180;
+  const φ1 = toR(a.lat), φ2 = toR(b.lat), Δλ = toR(b.lng - a.lng);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return Math.round(((Math.atan2(y, x) * 180) / Math.PI + 360) % 360);
+}
+
 async function fetchBuildingPhoto(address, folderKey) {
   if (!GOOGLE_MAPS_KEY || !address) return null;
   try {
+    const geo = await geocodeAddress(address);
+    // Query Street View by precise coords when we have them, else the raw address.
+    const loc = geo ? `${geo.lat},${geo.lng}` : address;
     const meta = await fetch(
-      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${encodeURIComponent(address)}&key=${GOOGLE_MAPS_KEY}`
+      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${encodeURIComponent(loc)}&source=outdoor&key=${GOOGLE_MAPS_KEY}`
     ).then((r) => r.json());
-    if (meta.status !== "OK") return null; // no street imagery for this address
+    if (meta.status !== "OK") return null; // no usable street imagery → no photo
+
+    // Aim the camera from the panorama toward the building so we see the right one.
+    let aim = "";
+    if (geo && meta.location && Number.isFinite(meta.location.lat)) {
+      aim = `&heading=${bearingDeg(meta.location, geo)}&pitch=10`;
+    }
     const img = await fetch(
-      `https://maps.googleapis.com/maps/api/streetview?size=640x640&location=${encodeURIComponent(address)}&fov=80&key=${GOOGLE_MAPS_KEY}`
+      `https://maps.googleapis.com/maps/api/streetview?size=640x640&location=${encodeURIComponent(loc)}&fov=72${aim}&source=outdoor&key=${GOOGLE_MAPS_KEY}`
     );
     if (!img.ok) return null;
     const buf = Buffer.from(await img.arrayBuffer());
     const path = `${safePath(folderKey)}/streetview.jpg`;
     const { error } = await supabase.storage.from(BUCKET).upload(path, buf, { contentType: "image/jpeg", upsert: true });
     if (error) { console.error(`  street view upload failed: ${error.message}`); return null; }
-    console.log("  📷 added Street View photo");
+    console.log(`  📷 added Street View photo${geo ? " (aimed at building)" : ""}`);
     return { path, name: "Street View" };
   } catch (e) {
     console.error(`  street view failed: ${e.message}`);
