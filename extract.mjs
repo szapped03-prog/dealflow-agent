@@ -165,7 +165,9 @@ const DEAL_SCHEMA = {
       additionalProperties: false,
       description: "If this email is or contains a LEASE for a building the firm OWNS (a signed lease, lease agreement, lease abstract, renewal, or amendment — for a tenant in an existing property), capture it. A lease is NOT a property acquisition and NOT an invoice. Read the attached lease PDF.",
       properties: {
-        is_lease: { type: "boolean", description: "true if this email is/contains a tenant lease, renewal, or amendment for an existing building." },
+        is_lease: { type: "boolean", description: "true if this email is/contains a tenant lease, renewal, amendment, OR a move-out/vacate/termination notice for an existing building." },
+        is_move_out: { type: "boolean", description: "true if this is a MOVE-OUT / vacate / lease termination / notice-to-vacate for a tenant leaving — NOT a new lease." },
+        move_out_date: { type: ["string", "null"], description: "The move-out / vacate / lease end date for a move-out notice, ISO YYYY-MM-DD." },
         property: { type: ["string", "null"], description: "The building address or name this lease is for (used to file it under the right property)." },
         tenant: { type: ["string", "null"], description: "Tenant / lessee name." },
         unit: { type: ["string", "null"], description: "Unit / suite / apartment number." },
@@ -177,7 +179,7 @@ const DEAL_SCHEMA = {
         lease_type: { type: ["string", "null"], enum: ["new", "renewal", "amendment", null], description: "Whether it's a new lease, a renewal, or an amendment." },
         note: { type: ["string", "null"], description: "Any other key terms: free rent, escalations, options, security deposit." },
       },
-      required: ["is_lease", "property", "tenant", "unit", "monthly_rent", "annual_rent", "start_date", "end_date", "term_months", "lease_type", "note"],
+      required: ["is_lease", "is_move_out", "move_out_date", "property", "tenant", "unit", "monthly_rent", "annual_rent", "start_date", "end_date", "term_months", "lease_type", "note"],
     },
     invoice: {
       type: "object",
@@ -233,6 +235,7 @@ Rules:
 - comps: if the email or any attached document includes comparable sales or rentals (a "comps", "comparables", or "rent comps" section is common in OMs), extract each one into the comps array. Do not invent comps — only include comps actually present in the materials.
 - invoice: a forwarded email may instead be a VENDOR INVOICE or ACCOUNT STATEMENT (a bill — utilities, legal, contractor, services). If so, set is_real_estate_deal=false AND invoice.is_invoice=true, and extract vendor, invoice number, date, amount, and whether it's an 'invoice' or 'statement'. Read the attached invoice PDF for these. A property opportunity is NOT an invoice.
 - lease: a forwarded email may be a TENANT LEASE for a building the firm already owns (a signed lease, lease agreement/abstract, renewal, or amendment). If so, set is_real_estate_deal=false AND lease.is_lease=true, and extract the building (property), tenant, unit, rent, term, and dates from the lease PDF. A lease is for an EXISTING owned building — it is NOT a new acquisition and NOT an invoice.
+- move-outs: a MOVE-OUT, vacate, notice-to-vacate, or lease-termination notice is also a lease event — set lease.is_lease=true AND lease.is_move_out=true, with the tenant, unit, building (property), and move_out_date. This marks the tenant's existing lease as moved out (it does NOT add a new lease).
 - links: capture any deal-room / data-room / VDR / document-portal / online-listing URLs from the email or documents into the links array, each with a short label. Don't include unsubscribe, email-tracking, or social links.
 - track: classify which pipeline the email belongs to. 'acquisition' = a property offered for sale that we might buy (most broker emails — the default). 'refi' = refinancing or a new loan on a property we already own (lender term sheets, rate quotes, loan talk on an existing building). 'disposition' = we are selling/marketing a property we own. If it's clearly not about our own owned asset, use 'acquisition'.`;
 

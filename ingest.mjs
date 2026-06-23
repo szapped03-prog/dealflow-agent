@@ -476,7 +476,46 @@ async function applyLease(email, extracted, deals) {
       })
     : null;
 
-  const uploaded = DRY_RUN ? [] : await uploadAttachments(email);
+  const kind = L.is_move_out ? "move-out" : "lease";
+  if (!target) {
+    console.log(`  📄 ${kind} for "${L.property || "?"}" — no matching building`);
+    await sendAlert(`${L.is_move_out ? "Move-out" : "Lease"} received — no matching building`,
+      `A ${kind}${L.tenant ? ` for ${L.tenant}` : ""} arrived for "${L.property || "unknown"}" but no owned property matched it. File it manually in the portfolio.\n\nSubject: ${email.subject}`);
+    return;
+  }
+  if (DRY_RUN) { console.log(`  DRY: would file ${kind} (${L.tenant || "?"}) under "${target.nickname}"`); return; }
+
+  // ── Move-out: mark the tenant's existing active lease as moved out. ──
+  if (L.is_move_out) {
+    const t = norm(L.tenant), u = norm(L.unit);
+    const existing = (target.leases || []);
+    let matched = false;
+    const leases = existing.map((lz) => {
+      if (matched || lz.status === "moved_out") return lz;
+      const tenantHit = t && norm(lz.tenant) === t;
+      const unitHit = u && norm(lz.unit) === u;
+      if (tenantHit || unitHit) {
+        matched = true;
+        return { ...lz, status: "moved_out", move_out_date: L.move_out_date || null, note: [lz.note, `Moved out${L.move_out_date ? " " + L.move_out_date : ""}`].filter(Boolean).join(" · ") };
+      }
+      return lz;
+    });
+    // No prior lease on file → record the move-out as its own entry for the trail.
+    if (!matched) leases.push({
+      tenant: L.tenant, unit: L.unit, monthly_rent: null, annual_rent: null, start_date: null,
+      end_date: L.move_out_date || null, term_months: null, lease_type: "move_out", status: "moved_out",
+      move_out_date: L.move_out_date || null, note: L.note || "Move-out (no prior lease on file)",
+      doc_path: null, doc_name: null, source_email_id: email.messageId, added_at: new Date().toISOString(), from: email.from,
+    });
+    const { error } = await supabase.from("deals").update({ leases }).eq("id", target.id);
+    if (error) throw error;
+    target.leases = leases;
+    console.log(`  🚪 MOVE-OUT filed under "${target.nickname}": ${[L.tenant, L.unit].filter(Boolean).join(" · ")}${matched ? "" : " (no prior lease matched)"}`);
+    return;
+  }
+
+  // ── New lease / renewal / amendment: upload the doc and append a record. ──
+  const uploaded = await uploadAttachments(email);
   const leaseDoc = uploaded.find((d) => /pdf/i.test(d.type || "") || /\.pdf$/i.test(d.name || "")) || uploaded[0] || null;
   const entry = {
     tenant: L.tenant, unit: L.unit, monthly_rent: L.monthly_rent, annual_rent: L.annual_rent,
@@ -485,14 +524,6 @@ async function applyLease(email, extracted, deals) {
     doc_path: leaseDoc?.path || null, doc_name: leaseDoc?.name || email.attachments?.[0] || (email.subject || "Lease"),
     source_email_id: email.messageId, added_at: new Date().toISOString(), from: email.from,
   };
-
-  if (!target) {
-    console.log(`  📄 lease for "${L.property || "?"}" — no matching building`);
-    await sendAlert("Lease received — no matching building",
-      `A lease${L.tenant ? ` for ${L.tenant}` : ""} arrived for "${L.property || "unknown"}" but no owned property matched it. File it manually in the portfolio.\n\nSubject: ${email.subject}`);
-    return;
-  }
-  if (DRY_RUN) { console.log(`  DRY: would file lease (${L.tenant || "?"}) under "${target.nickname}"`); return; }
   const leases = mergeArrays(target.leases, [entry]);
   const { error } = await supabase.from("deals").update({ leases }).eq("id", target.id);
   if (error) throw error;
