@@ -1,9 +1,9 @@
 name: DealFlow invoice summary
 
-# Daily invoice-focused recap (backlog, new invoices, owed by vendor, flags).
+# Invoice-focused recap (backlog, new invoices, owed by vendor, flags).
+# Schedule DISABLED — the daily summary (digest.yml) already covers invoices;
+# kept as a manual on-demand report.
 on:
-  schedule:
-    - cron: '10 13 * * *' # ~9am US Eastern, just after the daily summary
   workflow_dispatch: {}
 
 jobs:

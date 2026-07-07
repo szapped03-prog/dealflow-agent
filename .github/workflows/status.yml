@@ -1,10 +1,9 @@
-name: DealFlow hourly status
+name: DealFlow status (manual)
 
-# Emails an hourly pulse (agent health, inbox backlog, last-hour activity).
-# Hourly cron is reliable on GitHub (unlike sub-15-min schedules).
+# Emails a status pulse (agent health, inbox backlog, last-hour activity).
+# Schedule DISABLED — routine email is the daily summary (digest.yml) only;
+# kept as a manual on-demand check.
 on:
-  schedule:
-    - cron: '0 * * * *' # top of every hour (UTC)
   workflow_dispatch: {}
 
 jobs:
