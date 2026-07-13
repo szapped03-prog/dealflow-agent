@@ -611,6 +611,27 @@ async function applyInvoice(email, extracted) {
   await alertOnTrend(row);
 }
 
+// Run-failure emails at most once per 24h, tracked in storage — the Railway
+// loop starts a fresh process every ~60s, so a per-process flag alone would
+// email on every failing run (27 emails in 2 days before this).
+const ALERT_STATE = "_status/alert-throttle.json";
+async function sendFatalAlert(subject, body) {
+  try {
+    const { data } = await supabase.storage.from(BUCKET).download(ALERT_STATE);
+    const state = data ? JSON.parse(await data.text()) : {};
+    if (state.fatal_at && Date.now() - new Date(state.fatal_at).getTime() < 24 * 3600 * 1000) {
+      console.log("  (failure alert suppressed — already emailed within 24h)");
+      return;
+    }
+    await supabase.storage.from(BUCKET).upload(
+      ALERT_STATE,
+      Buffer.from(JSON.stringify({ ...state, fatal_at: new Date().toISOString() })),
+      { upsert: true, contentType: "application/json" }
+    );
+  } catch { /* throttle state unreadable — send rather than stay silent */ }
+  await sendAlert(subject, body + "\n\n(Further failure emails are suppressed for 24h.)");
+}
+
 // Email an alert (default to the deals inbox, or ALERT_EMAIL) for invoice trends.
 async function sendAlert(subject, body) {
   const to = process.env.ALERT_EMAIL || process.env.GMAIL_USER;
@@ -728,7 +749,7 @@ async function processInvoiceInbox() {
       if (isFatalApi(err.message) && !fatalAlerted) {
         fatalAlerted = true;
         process.exitCode = 1;
-        await sendAlert("DealFlow bot is failing", `The agent hit a likely fatal error (check your Anthropic credit balance / API keys):\n\n${err.message}\n\nNew deals/invoices won't import until this is resolved.`);
+        await sendFatalAlert("DealFlow bot is failing", `The agent hit a likely fatal error (check your Anthropic credit balance / API keys):\n\n${err.message}\n\nNew deals/invoices won't import until this is resolved.`);
       }
     }
   }
@@ -862,7 +883,7 @@ async function main() {
       if (isFatalApi(err.message) && !fatalAlerted) {
         fatalAlerted = true;
         process.exitCode = 1;
-        await sendAlert("DealFlow bot is failing", `The agent hit a likely fatal error (check your Anthropic credit balance / API keys):\n\n${err.message}\n\nNew deals/invoices won't import until this is resolved.`);
+        await sendFatalAlert("DealFlow bot is failing", `The agent hit a likely fatal error (check your Anthropic credit balance / API keys):\n\n${err.message}\n\nNew deals/invoices won't import until this is resolved.`);
       }
     }
   }
@@ -916,9 +937,15 @@ main()
   .then(writeHeartbeat)
   .catch(async (err) => {
     console.error("Fatal:", err);
-    try { await sendAlert("DealFlow run crashed", `${err?.message || err}`); } catch {}
+    // Transient network blips (socket timeout, ECONNRESET) crash a run but the
+    // loop retries in 60s — do NOT email those; it was one email per blip, all
+    // day. Only a truly fatal API error (dead key / no credit) is worth a note,
+    // and even that goes through the 24h throttle.
+    if (isFatalApi(err?.message)) {
+      try { await sendFatalAlert("DealFlow bot is failing", `The agent hit a likely fatal error (check your Anthropic credit balance / API keys):\n\n${err.message}\n\nNew deals/invoices won't import until this is resolved.`); } catch {}
+    }
     // Still stamp the heartbeat: the process DID run a cycle, so the watchdog
-    // shouldn't also cry "agent is DOWN" — the crash alert above is the signal.
+    // shouldn't also cry "agent is DOWN" — a real outage is the watchdog's job.
     try { await writeHeartbeat(); } catch {}
     process.exit(1);
   });
