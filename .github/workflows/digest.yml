@@ -1,8 +1,9 @@
 name: DealFlow daily digest
 
+# Schedule DISABLED (2026-07-13) — user turned off routine status-update emails.
+# Kept as a manual on-demand report; failure alerts (heartbeat watchdog) and
+# per-deal "✅ Added" confirmations are unaffected.
 on:
-  schedule:
-    - cron: '0 13 * * *' # ~9am US Eastern
   workflow_dispatch: {}
 
 jobs:
