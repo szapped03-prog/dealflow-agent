@@ -634,6 +634,12 @@ async function sendFatalAlert(subject, body) {
 
 // Email an alert (default to the deals inbox, or ALERT_EMAIL) for invoice trends.
 async function sendAlert(subject, body) {
+  // Alert emails are OFF (user request 2026-07-13). Everything still logs to
+  // the Railway console. Set ALERT_EMAILS=1 in the environment to re-enable.
+  if (process.env.ALERT_EMAILS !== "1") {
+    console.log(`  🔕 alert email off — would have sent: ${subject}`);
+    return;
+  }
   const to = process.env.ALERT_EMAIL || process.env.GMAIL_USER;
   if (DRY_RUN || !to) return;
   try {

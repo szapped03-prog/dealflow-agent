@@ -2,9 +2,9 @@ name: DealFlow heartbeat watchdog
 
 # Runs independently of Railway so it can detect the agent being dead.
 # Checks the heartbeat the agent writes to Supabase and emails if it's stale.
+# Schedule DISABLED (2026-07-13) — user turned off all automated DealFlow
+# emails. Run manually (workflow_dispatch) to check agent health on demand.
 on:
-  schedule:
-    - cron: '*/15 * * * *' # every ~15 min (GitHub may batch this; detection lags at worst ~1h)
   workflow_dispatch: {}
 
 jobs:

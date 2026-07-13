@@ -3,9 +3,10 @@ name: keepalive
 # GitHub auto-disables scheduled workflows after 60 days of repo inactivity.
 # This makes a tiny empty commit weekly so the schedule never pauses — keeping
 # the email agent always-on with no manual intervention.
+# Schedule DISABLED (2026-07-13) — no scheduled workflows remain (all email
+# schedules turned off), so there is nothing to keep alive. Re-enable this if
+# any workflow schedule comes back.
 on:
-  schedule:
-    - cron: '23 9 * * 1' # weekly, Monday 09:23 UTC
   workflow_dispatch: {}
 
 permissions:
